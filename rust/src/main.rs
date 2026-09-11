@@ -642,7 +642,15 @@ fn run_shell(cmd: &str, cwd: &str) -> std::io::Result<bool> {
 
 fn copy_web(web: &PathBuf, dir: &str) {
     let dst = PathBuf::from(dir);
-    let _ = std::fs::copy(web.join("index.html"), dst.join("index.html"));
+    // Every file in web/, not just index.html: robots.txt lives there too, and
+    // a named list is a thing to forget to update.
+    if let Ok(rd) = std::fs::read_dir(web) {
+        for e in rd.flatten() {
+            if e.path().is_file() {
+                let _ = std::fs::copy(e.path(), dst.join(e.file_name()));
+            }
+        }
+    }
     let icons_src = web.join("icons");
     let icons_dst = dst.join("icons");
     if icons_src.is_dir() {

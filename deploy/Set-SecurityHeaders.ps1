@@ -54,6 +54,10 @@ $headers = [ordered]@{
     'Cross-Origin-Opener-Policy'   = 'same-origin'
     'Cross-Origin-Resource-Policy' = 'same-origin'
     'Permissions-Policy'           = 'geolocation=(), camera=(), microphone=()'
+    # The page has a robots meta tag; status.json and the rest cannot have one,
+    # because there is nowhere in a JSON file to put it. A header covers every
+    # response whatever its type.
+    'X-Robots-Tag'                 = 'noindex, nofollow, noarchive'
     'Content-Security-Policy'      = @(
         "default-src 'none'"
         "script-src 'unsafe-inline'"
@@ -78,11 +82,20 @@ $headers.GetEnumerator() | ForEach-Object {
 
 if ($WhatIfPreference) { Write-Host "`n(WhatIf: nothing sent)"; return }
 
-Write-Host "`nPaste the API token. Input is masked and is not saved anywhere."
-$secure = Read-Host "Cloudflare API token" -AsSecureString
-$bstr   = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-try { $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
-finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+# A stored token, if one was set up with Set-CloudflareToken.ps1. Without it
+# the token is asked for here and kept only for this run -- which is safer, but
+# also means nothing can run this script unattended.
+$tokenFile = Join-Path $env:USERPROFILE '.hilgpu\cloudflare.token'
+if (Test-Path $tokenFile) {
+    $token = (Get-Content $tokenFile -Raw).Trim()
+    Write-Host "`nusing the stored token ($tokenFile)"
+} else {
+    Write-Host "`nPaste the API token. Input is masked and is not saved anywhere."
+    $secure = Read-Host "Cloudflare API token" -AsSecureString
+    $bstr   = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
 if (-not $token) { throw 'no token entered' }
 
 $auth = @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' }
