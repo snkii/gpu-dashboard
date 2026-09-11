@@ -467,10 +467,7 @@ fn run_publish(c: &Arc<Collector>, args: &Args, dir: &str, public: bool) {
         // call, and a sentence about a cluster does not change in a minute.
         if summarizer.enabled() && now - last_summary >= args.summary_interval as f64 {
             last_summary = now;
-            // Total draw an hour ago, for a rising/falling line. None on a
-            // fresh install, and the prompt simply has one less fact.
-            let trend = c.watts_ago(now as u32, 3600);
-            if summarizer.refresh(&body, now as u32, trend) {
+            if summarizer.refresh(&body, now as u32) {
                 let sbody =
                     summary::write_json(&summarizer.text, summarizer.ts, args.summary_model.as_str());
                 match write_atomic(dir, "summary.json", sbody.as_bytes()) {

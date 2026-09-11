@@ -33,6 +33,9 @@ pub struct Summarizer {
     pub text: String,
     pub ts: u32,
     pub failures: u32,
+    /// Total draw and time at the last successful briefing, for the "since
+    /// last time" figure. One float is the entire trend mechanism.
+    last: Option<(f64, u32)>,
 }
 
 impl Summarizer {
@@ -45,6 +48,7 @@ impl Summarizer {
             text: String::new(),
             ts: 0,
             failures: 0,
+            last: None,
         }
     }
 
@@ -89,11 +93,14 @@ impl Summarizer {
     ///
     /// Takes the snapshot rather than the live samples so that the summary can
     /// only ever describe what a visitor can actually see.
-    pub fn refresh(&mut self, snapshot: &str, now: u32, trend: Option<f64>) -> bool {
+    pub fn refresh(&mut self, snapshot: &str, now: u32) -> bool {
         let key = match self.key() {
             Some(k) => k,
             None => return false,
         };
+        let trend = self
+            .last
+            .map(|(w, then)| (w, ((now.saturating_sub(then)) as f64 / 60.0).round() as u32));
         let facts = match digest_with_trend(snapshot, trend) {
             Some(f) => f,
             None => return false,
@@ -104,6 +111,12 @@ impl Summarizer {
                 let changed = t != self.text;
                 self.text = t;
                 self.ts = now;
+                // Only after a success: a failed call did not tell anyone
+                // anything, so the next one should still compare to the last
+                // briefing a person actually saw.
+                if let Some(w) = total_watts(snapshot) {
+                    self.last = Some((w, now));
+                }
                 changed
             }
             Err(e) => {
@@ -271,13 +284,20 @@ fn extract(body: &str) -> Result<String, String> {
 ///     does every sum; an earlier version that asked the model to collapse a
 ///     list into a count answered "six" when there were seven.
 const PROMPT: &str = "\
-연구실 GPU 클러스터 상태 브리핑을 씁니다. 터미널 출력처럼 간결하게, 한국어 3문장 이내, 200자 이내.
+연구실 GPU 클러스터 상태 브리핑을 씁니다. 한국어 3~4문장, 250자 이내.
 
 아래 \"판정\"·\"이상 징후\"·\"관측\"에 적힌 사실만 사용하세요.
 
+- **완전한 문장으로 쓰세요.** \"랙 301-513 2408 W\" 처럼 명사만 나열하지 말고,
+  \"301-513 랙이 2408 W로 전력을 가장 많이 쓰고 있습니다\" 처럼 서술하세요.
+- **어떤 항목을 언급할 때는 왜 언급하는지도 함께 쓰세요.** 임계값이나 이유가 적혀 있으면
+  그것을 문장에 넣으세요. 예를 들어 VRAM 수치를 말한다면 그것이 왜 문제인지(추가 할당 시
+  OOM 위험) 같이 말해야 읽는 사람이 심각한지 아닌지 압니다. 숫자만 던지지 마세요.
 - 이상 징후가 있으면 그것부터. 없으면 \"이상 없음\"으로 시작하세요.
-- 전체 규모(GPU 몇 대 중 몇 대 사용 중, 서버 응답 수)를 한 번 말하세요. 화면에 따로 표시되지 않으므로 이 문장이 유일한 출처입니다.
-- 그리고 전력과 열을 말하세요: 전력 최다 서버와 랙, 최고 온도, VRAM이 거의 찬 서버, 팬이 최대인 서버, 1시간 전 대비 전력 변화. 적혀 있는 것 중 의미 있는 것을 고르세요.
+- 전체 규모(GPU 몇 대 중 몇 대 사용 중, 서버 응답 수, 총 전력)를 한 번 말하세요.
+  화면에 따로 표시되지 않으므로 이 문장이 유일한 출처입니다.
+- 그리고 전력과 열 중 의미 있는 것을 고르세요. 적혀 있는 것을 전부 나열할 필요는 없습니다.
+- 직전 브리핑과 비교한 항목이 있으면, 몇 분 전과 비교한 것인지 함께 쓰세요.
 - **어느 서버가 비어 있는지는 절대 쓰지 마세요.** 총계는 괜찮지만 한가한 서버의 이름을 대서는 안 됩니다.
 - 세거나 계산하거나 판단하지 마세요. 임계 판정과 집계는 이미 끝나 있습니다. 숫자는 그대로 옮기세요.
 - 적혀 있지 않은 것은 쓰지 마세요.
@@ -307,8 +327,22 @@ pub fn digest(snapshot: &str) -> Option<String> {
     digest_with_trend(snapshot, None)
 }
 
-/// As `digest`, plus the total draw an hour ago when the store has it.
-pub fn digest_with_trend(snapshot: &str, trend: Option<f64>) -> Option<String> {
+/// Total draw across every responding server in a snapshot.
+pub fn total_watts(snapshot: &str) -> Option<f64> {
+    let v = json::parse(snapshot.trim_start_matches('\u{feff}')).ok()?;
+    Some(
+        v.get("servers")?
+            .as_arr()?
+            .iter()
+            .filter(|s| s.str_or("status", "") == "ok")
+            .map(|s| s.num_or("watts", 0.0))
+            .sum(),
+    )
+}
+
+/// As `digest`, plus what the total draw was at the previous briefing and how
+/// many minutes ago that was.
+pub fn digest_with_trend(snapshot: &str, trend: Option<(f64, u32)>) -> Option<String> {
     // Strip a byte-order mark. The collector never writes one, but this also
     // reads snapshots off disk, and anything edited on Windows may carry one.
     let v = json::parse(snapshot.trim_start_matches('\u{feff}')).ok()?;
@@ -441,7 +475,7 @@ pub fn digest_with_trend(snapshot: &str, trend: Option<f64>) -> Option<String> {
     out.push_str("관측:\n");
     if let Some((n, pw, cap)) = thirstiest {
         out.push_str(&format!(
-            "- 전력 최다: {} {} W{}\n",
+            "- 서버 중에서는 {}이 {} W로 전력을 가장 많이 쓰는 중{}\n",
             n,
             pw.round() as i64,
             if cap > 0.0 {
@@ -452,30 +486,54 @@ pub fn digest_with_trend(snapshot: &str, trend: Option<f64>) -> Option<String> {
         ));
     }
     if let Some((n, t)) = hottest {
-        out.push_str(&format!("- 최고 온도: {} {}도\n", n, t.round() as i64));
+        out.push_str(&format!(
+            "- 가장 뜨거운 카드는 {}의 {}도 (경고 임계 {}도)\n",
+            n,
+            t.round() as i64,
+            TEMP_ALERT as i64
+        ));
     }
     let mut rooms: Vec<(&String, &f64)> = by_room.iter().collect();
     rooms.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
     if let Some((room, w)) = rooms.first() {
-        out.push_str(&format!("- 전력 최다 랙: {} {} W\n", room, w.round() as i64));
+        out.push_str(&format!(
+            "- 랙 중에서는 {}이 {} W로 전력을 가장 많이 쓰는 중\n",
+            room,
+            w.round() as i64
+        ));
     }
+    // Each label carries the reason the figure is worth a mention. A bare
+    // "VRAM 95%" leaves the reader unable to tell alarming from ordinary, and
+    // gives no hint why these machines and not the other eleven.
     if !vram_tight.is_empty() {
-        out.push_str(&format!("- VRAM 거의 참: {}\n", vram_tight.join(", ")));
+        out.push_str(&format!(
+            "- VRAM이 {}% 이상 차서 추가 할당 시 OOM 위험: {}\n",
+            (VRAM_ALERT * 100.0).round() as i64,
+            vram_tight.join(", ")
+        ));
     }
     if !fans_open.is_empty() {
-        out.push_str(&format!("- 팬 최대: {}\n", fans_open.join(", ")));
+        out.push_str(&format!(
+            "- 팬이 {}% 이상으로 냉각 여력이 없음: {}\n",
+            FAN_ALERT as i64,
+            fans_open.join(", ")
+        ));
     }
     if !rebooted.is_empty() {
-        out.push_str(&format!("- 최근 재부팅: {}\n", rebooted.join(", ")));
-    }
-    if let Some(t) = trend {
-        let d = watts - t;
         out.push_str(&format!(
-            "- 1시간 전 대비 전력: {}{} W ({} W → {} W)\n",
+            "- 24시간 안에 재부팅되어 실행 중이던 작업이 끊겼을 수 있음: {}\n",
+            rebooted.join(", ")
+        ));
+    }
+    if let Some((prev, mins)) = trend {
+        let d = watts - prev;
+        out.push_str(&format!(
+            "- 직전 브리핑({}분 전)과 비교하면 전력이 {} W에서 {} W로 {}{} W 변함\n",
+            mins,
+            prev.round() as i64,
+            watts.round() as i64,
             if d >= 0.0 { "+" } else { "" },
-            d.round() as i64,
-            t.round() as i64,
-            watts.round() as i64
+            d.round() as i64
         ));
     }
 
@@ -574,8 +632,8 @@ mod tests {
         assert!(d.contains("GPU 1/2 사용중"), "{}", d);
         assert!(d.contains("g2: 응답 없음"), "{}", d);
         assert!(d.contains("g1 (3090): GPU 1/2 사용중, 900 W, 최고 70도, 랙 a"), "{}", d);
-        assert!(d.contains("전력 최다: g1 900 W"), "{}", d);
-        assert!(d.contains("최고 온도: g1 70도"), "{}", d);
+        assert!(d.contains("g1이 900 W로 전력을 가장 많이 쓰는 중"), "{}", d);
+        assert!(d.contains("가장 뜨거운 카드는 g1의 70도 (경고 임계 85도)"), "{}", d);
     }
 
     #[test]
@@ -599,7 +657,7 @@ mod tests {
         let d = digest(&snap).unwrap();
         assert!(d.contains("판정: 이상 징후"), "{}", d);
         assert!(d.contains("busy1: GPU 온도 88도"), "{}", d);
-        assert!(d.contains("최고 온도: busy1 88도"), "{}", d);
+        assert!(d.contains("가장 뜨거운 카드는 busy1의 88도"), "{}", d);
     }
 
     #[test]
@@ -654,12 +712,17 @@ mod tests {
             {"name":"g2","status":"ok","gpu_model":"x","loc":"roomB","watts":900,
              "gpus":[{"util":99,"mem_used":23500,"mem_total":24000,"temp":70,"power_limit":1000,"fan":98}]}
         ]}"#;
-        let d = digest_with_trend(snap, Some(800.0)).unwrap();
-        assert!(d.contains("전력 최다 랙: roomB 900 W"), "{}", d);
-        assert!(d.contains("VRAM 거의 참: g2 98%"), "{}", d);
-        assert!(d.contains("팬 최대: g2 98%"), "{}", d);
+        let d = digest_with_trend(snap, Some((800.0, 10))).unwrap();
+        assert!(d.contains("roomB이 900 W로 전력을 가장 많이 쓰는 중"), "{}", d);
+        // The reason travels with the number, so the model cannot drop it.
+        assert!(d.contains("VRAM이 92% 이상 차서 추가 할당 시 OOM 위험: g2 98%"), "{}", d);
+        assert!(d.contains("팬이 95% 이상으로 냉각 여력이 없음: g2 98%"), "{}", d);
         // 1020 now vs 800 an hour ago.
-        assert!(d.contains("1시간 전 대비 전력: +220 W"), "{}", d);
+        assert!(
+            d.contains("직전 브리핑(10분 전)과 비교하면 전력이 800 W에서 1020 W로 +220 W 변함"),
+            "{}",
+            d
+        );
         assert!(d.contains("서버 2대 중 2대 응답"), "{}", d);
     }
 
@@ -671,8 +734,18 @@ mod tests {
                       "power_limit":350,"fan":115}]}
         ]}"#;
         let d = digest(snap).unwrap();
-        assert!(d.contains("팬 최대: g1 100%"), "{}", d);
+        assert!(d.contains("냉각 여력이 없음: g1 100%"), "{}", d);
         assert!(!d.contains("115"), "a percentage over 100 reads as a bug:\n{}", d);
+    }
+
+    #[test]
+    fn total_watts_counts_only_responding_servers() {
+        let snap = r#"{"servers":[
+            {"name":"a","status":"ok","watts":100,"gpus":[]},
+            {"name":"b","status":"ok","watts":250,"gpus":[]},
+            {"name":"c","status":"down","watts":9999}
+        ]}"#;
+        assert_eq!(total_watts(snap), Some(350.0));
     }
 
     #[test]

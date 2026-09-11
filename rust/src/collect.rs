@@ -396,34 +396,6 @@ impl Collector {
         w.buf
     }
 
-    /// Total draw across all servers roughly `ago` seconds back, from the
-    /// statistics store. `None` until the store has rows that far back, which
-    /// is the normal state for the first hour after an install.
-    ///
-    /// A window rather than a point: rows land on a period boundary, so asking
-    /// for one exact second would usually miss.
-    pub fn watts_ago(&self, now: u32, ago: u32) -> Option<f64> {
-        let target = now.checked_sub(ago)?;
-        let half = 120;
-        let d = self.shared.db.lock().unwrap();
-        let mut total = 0.0;
-        let mut seen = 0;
-        for s in self.cfg.active() {
-            let rows = d.range(&s.name, target.saturating_sub(half), target + half);
-            if rows.is_empty() {
-                continue;
-            }
-            total += rows.iter().map(|r| r.watts as f64).sum::<f64>() / rows.len() as f64;
-            seen += 1;
-        }
-        // Half the fleet missing means the store does not reach back this far;
-        // a partial sum would read as a huge drop in draw.
-        if seen * 2 < self.cfg.active().len() {
-            return None;
-        }
-        Some(total)
-    }
-
     pub fn prune_db(&self, keep_days: i64) -> usize {
         let d = self.shared.db.lock().unwrap();
         d.prune(keep_days, gate::now() as i64)
