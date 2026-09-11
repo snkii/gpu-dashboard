@@ -123,8 +123,12 @@
   .jb[data-a="wait"] { border-style: dotted; }
   .jb[data-a="wait"] b, .jb[data-a="wait"] i { color: var(--fg4); }
   .jb[data-a="down"] b, .jb[data-a="down"] i { color: var(--fg4); }
-  /* Sticky header would otherwise cover the card we just jumped to. */
-  .card { scroll-margin-top: 200px; }
+  /* Sticky header would otherwise cover the card we just jumped to. Its
+     height is not a constant -- the briefing line inside it wraps to two or
+     three lines on a narrow screen -- so it is measured and published as --hh
+     rather than guessed at. The fallback only applies before the first
+     measurement. */
+  .card, .sbox { scroll-margin-top: calc(var(--hh, 200px) + 10px); }
   .card.flash, .sbox.flash { animation: fl 1.1s ease-out; }
   @keyframes fl {
     0%, 30% { box-shadow: 0 0 0 3px var(--blue-b), var(--shadow); }
@@ -165,16 +169,23 @@
                    margin-left: 7px; letter-spacing: .02em; }
   .ai .ai-pr { color: var(--green); font-weight: 700; user-select: none;
                margin-right: 5px; }
-  .ai > p { display: inline; margin: 0; color: var(--fg1); letter-spacing: -.01em; }
-  .ai > p::after {
+  #ai-text { color: var(--fg1); letter-spacing: -.01em; }
+  #ai-text::after {
     content: ""; display: inline-block; width: .55em; height: 1.05em;
     margin-left: 2px; vertical-align: -.2em; background: var(--green);
     animation: caret 1.1s step-end infinite;
   }
   @keyframes caret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
-  @media (prefers-reduced-motion: reduce) { .ai > p::after { animation: none; } }
-  /* On a phone the model name is the first thing that can go. */
-  @media (max-width: 560px) { .ai .ai-meta b { display: none; } }
+  @media (prefers-reduced-motion: reduce) { #ai-text::after { animation: none; } }
+  /* On a phone a floated corner has no room for both the age and the model
+     name, so the box becomes a column and the byline gets its own line under
+     the text rather than being dropped. */
+  @media (max-width: 560px) {
+    .ai { display: flex; flex-direction: column; }
+    .ai .ai-body { order: 1; }
+    .ai .ai-meta { order: 2; float: none; align-self: flex-end;
+                   margin: 5px 0 0; }
+  }
 
   .banner { margin: 0 0 10px; padding: 9px 11px; border-radius: var(--radius);
             font-size: 12.5px; background: var(--warn-bg); color: var(--orange);
@@ -395,8 +406,8 @@
          is: a one-line report from a check that ran. -->
     <div id="ai" class="ai hide">
       <span class="ai-meta"><i id="ai-ts"></i><b id="ai-tag"></b></span>
-      <span class="ai-pr" aria-hidden="true">&gt;</span>
-      <p id="ai-text"></p>
+      <span class="ai-body"><span class="ai-pr" aria-hidden="true">&gt;</span><span
+        id="ai-text"></span></span>
     </div>
 
     <div class="stats">
@@ -919,6 +930,20 @@ function columnize(host, nodes, n) {
   });
 }
 
+/* Publish the sticky header's real height so scroll-margin can match it.
+   ResizeObserver rather than a resize listener: the header also changes height
+   when the briefing text wraps, which no window event reports. */
+function watchHeaderHeight() {
+  var h = document.querySelector("header");
+  if (!h) return;
+  var apply = function () {
+    document.documentElement.style.setProperty("--hh", h.offsetHeight + "px");
+  };
+  apply();
+  if (window.ResizeObserver) new ResizeObserver(apply).observe(h);
+  else window.addEventListener("resize", apply);
+}
+
 /* ---------------- one-touch jump bar ---------------- */
 var JUMP = new Map();
 
@@ -1081,28 +1106,24 @@ function loadSummary() {
     });
 }
 
-/* Type the summary in on the first load only.
-   It is a sentence a language model wrote, and watching it appear says so
-   without a label. On later refreshes it just swaps: an animation that
-   replayed itself every few minutes would be an irritation, not a signal. */
-var AI_SEEN = false, AI_TYPER = 0;
+/* Type the briefing in -- on first load and on every later change.
+   The check runs every ten minutes, and a reader who happens to be looking
+   should see that it ran rather than find the sentence silently swapped. The
+   guard is on the text, not on the visit: an unchanged answer redraws nothing. */
+var AI_TYPER = 0;
 
 function showSummary(t) {
   var p = $("ai-text");
-  if (p.__t === t) return;
+  if (p.__t === t) return;         // same answer as last time: leave it alone
   clearInterval(AI_TYPER);
   var reduce = window.matchMedia
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (AI_SEEN || reduce || !t) {
-    setText(p, t);
-    AI_SEEN = true;
-    return;
-  }
-  AI_SEEN = true;
+  if (reduce || !t) { setText(p, t); return; }
+
   p.__t = t;                       // setText's cache, kept honest
   p.textContent = "";
   var i = 0;
-  // ~22ms a character puts a 100-character line at about two seconds.
+  // ~22ms a character puts a 140-character briefing at about three seconds.
   AI_TYPER = setInterval(function () {
     i += 1;
     p.textContent = t.slice(0, i);
@@ -1483,7 +1504,13 @@ function setTab(t) {
 
 document.querySelector(".tabs").addEventListener("click", function (ev) {
   var b = ev.target.closest("button[data-tab]");
-  if (b) setTab(b.dataset.tab);
+  if (!b) return;
+  var changed = b.dataset.tab !== TAB;
+  setTab(b.dataset.tab);
+  // Show the new view from its start. Without this the scroll position carries
+  // over from the previous tab, and coming back from the long statistics view
+  // lands in the middle of a card.
+  if (changed) window.scrollTo({ top: 0, behavior: "smooth" });
 });
 
 // Restore the viewer's saved preferences.
@@ -1497,6 +1524,7 @@ try {
   // Dark is the default; only an explicit saved "light" overrides it.
   savedTheme = localStorage.getItem("hilgpu.theme") === "light" ? "light" : "dark";
 } catch (e) {}
+watchHeaderHeight();
 setTheme(savedTheme, false);
 [].forEach.call(document.querySelectorAll("#st-range .seg"), function (x) {
   x.setAttribute("aria-pressed", String(x.dataset.r === ST_RANGE));

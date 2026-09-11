@@ -18,6 +18,7 @@
 //! few minutes -- for a program whose lack of dependencies is a feature.
 
 use crate::json;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -88,12 +89,12 @@ impl Summarizer {
     ///
     /// Takes the snapshot rather than the live samples so that the summary can
     /// only ever describe what a visitor can actually see.
-    pub fn refresh(&mut self, snapshot: &str, now: u32) -> bool {
+    pub fn refresh(&mut self, snapshot: &str, now: u32, trend: Option<f64>) -> bool {
         let key = match self.key() {
             Some(k) => k,
             None => return false,
         };
-        let facts = match digest(snapshot) {
+        let facts = match digest_with_trend(snapshot, trend) {
             Some(f) => f,
             None => return false,
         };
@@ -270,16 +271,24 @@ fn extract(body: &str) -> Result<String, String> {
 ///     does every sum; an earlier version that asked the model to collapse a
 ///     list into a count answered "six" when there were seven.
 const PROMPT: &str = "\
-연구실 GPU 클러스터의 이상 감지 결과를 한 줄로 보고합니다. 터미널 출력처럼 간결하게.
+연구실 GPU 클러스터 상태 브리핑을 씁니다. 터미널 출력처럼 간결하게, 한국어 3문장 이내, 200자 이내.
 
-아래 \"판정\"과 \"이상 징후\", \"관측\"에 적힌 사실만 사용해서 한국어로 쓰세요. 100자 이내.
+아래 \"판정\"·\"이상 징후\"·\"관측\"에 적힌 사실만 사용하세요.
 
-- 판정이 \"이상 없음\"이면: 이상이 없다고 먼저 말하고, 관측에서 전력 최다와 최고 온도를 한 문장으로 덧붙이세요.
-- 이상 징후가 있으면: 그것부터 쓰세요. 여러 건이면 심각한 것 위주로 최대 두 건까지.
+- 이상 징후가 있으면 그것부터. 없으면 \"이상 없음\"으로 시작하세요.
+- 그 다음 전력과 열을 말하세요: 전력 최다 서버와 위치, 최고 온도, VRAM이 거의 찬 서버, 팬이 최대인 서버, 1시간 전 대비 전력 변화. 적혀 있는 것 중 의미 있는 것을 고르세요.
+- **비어 있는 서버나 여유 GPU는 절대 언급하지 마세요.** 어디가 한가한지는 쓰지 않습니다.
 - 세거나 계산하거나 판단하지 마세요. 임계 판정과 집계는 이미 끝나 있습니다. 숫자는 그대로 옮기세요.
 - 적혀 있지 않은 것은 쓰지 마세요. \"참고 수치\"는 화면에 이미 있으니 반복하지 마세요.
-- 사실만 진술하세요. 권유하거나 지시하지 마세요(\"주의하십시오\" 같은 말 금지).
-- 마크다운, 목록, 이모지 금지. \"요약하자면\" 같은 서두도 금지.";
+- 사실만 진술하세요. 권유하거나 지시하지 마세요.
+- 마크다운, 목록, 이모지 금지. 서두 금지.";
+
+/// VRAM this full is one allocation away from an out-of-memory failure, which
+/// is worth saying before it happens rather than after.
+const VRAM_ALERT: f64 = 0.92;
+
+/// A fan this far open means the cooler has nothing left to give.
+const FAN_ALERT: f64 = 95.0;
 
 /// A GPU at or above this is hot enough to be worth a line. Consumer cards
 /// throttle in the mid-eighties, so this is the point where a card is losing
@@ -294,6 +303,11 @@ const POWER_ALERT: f64 = 0.95;
 /// Deliberately small: tokens cost money, and a model handed a wall of numbers
 /// writes a worse summary than one handed the few that matter.
 pub fn digest(snapshot: &str) -> Option<String> {
+    digest_with_trend(snapshot, None)
+}
+
+/// As `digest`, plus the total draw an hour ago when the store has it.
+pub fn digest_with_trend(snapshot: &str, trend: Option<f64>) -> Option<String> {
     // Strip a byte-order mark. The collector never writes one, but this also
     // reads snapshots off disk, and anything edited on Windows may carry one.
     let v = json::parse(snapshot.trim_start_matches('\u{feff}')).ok()?;
@@ -304,6 +318,10 @@ pub fn digest(snapshot: &str) -> Option<String> {
     let mut alerts = Vec::new();
     let mut hottest: Option<(String, f64)> = None;
     let mut thirstiest: Option<(String, f64, f64)> = None;
+    let mut by_room: BTreeMap<String, f64> = BTreeMap::new();
+    let mut vram_tight: Vec<String> = Vec::new();
+    let mut fans_open: Vec<String> = Vec::new();
+    let mut rebooted: Vec<String> = Vec::new();
     let (mut tot, mut busy, mut watts) = (0usize, 0usize, 0.0f64);
 
     for s in servers {
@@ -333,6 +351,24 @@ pub fn digest(snapshot: &str) -> Option<String> {
         tot += n;
         busy += b;
         watts += w;
+        *by_room.entry(s.str_or("loc", "?").to_string()).or_insert(0.0) += w;
+
+        let vmax = gpus
+            .iter()
+            .filter(|g| g.num_or("mem_total", 0.0) > 0.0)
+            .map(|g| g.num_or("mem_used", 0.0) / g.num_or("mem_total", 1.0))
+            .fold(0.0f64, f64::max);
+        if vmax >= VRAM_ALERT {
+            vram_tight.push(format!("{} {}%", name, (vmax * 100.0).round() as i64));
+        }
+        let fmax = gpus.iter().map(|g| g.num_or("fan", 0.0)).fold(0.0f64, f64::max);
+        if fmax >= FAN_ALERT {
+            fans_open.push(format!("{} {}%", name, fmax.round() as i64));
+        }
+        let up = s.num_or("uptime_sec", 0.0);
+        if up > 0.0 && up < 86_400.0 {
+            rebooted.push(format!("{} {}시간", name, (up / 3600.0).round() as i64));
+        }
 
         if tmax >= TEMP_ALERT {
             alerts.push(format!(
@@ -405,6 +441,30 @@ pub fn digest(snapshot: &str) -> Option<String> {
     }
     if let Some((n, t)) = hottest {
         out.push_str(&format!("- 최고 온도: {} {}도\n", n, t.round() as i64));
+    }
+    let mut rooms: Vec<(&String, &f64)> = by_room.iter().collect();
+    rooms.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+    if let Some((room, w)) = rooms.first() {
+        out.push_str(&format!("- 전력 최다 위치: {} {} W\n", room, w.round() as i64));
+    }
+    if !vram_tight.is_empty() {
+        out.push_str(&format!("- VRAM 거의 참: {}\n", vram_tight.join(", ")));
+    }
+    if !fans_open.is_empty() {
+        out.push_str(&format!("- 팬 최대: {}\n", fans_open.join(", ")));
+    }
+    if !rebooted.is_empty() {
+        out.push_str(&format!("- 최근 재부팅: {}\n", rebooted.join(", ")));
+    }
+    if let Some(t) = trend {
+        let d = watts - t;
+        out.push_str(&format!(
+            "- 1시간 전 대비 전력: {}{} W ({} W → {} W)\n",
+            if d >= 0.0 { "+" } else { "" },
+            d.round() as i64,
+            t.round() as i64,
+            watts.round() as i64
+        ));
     }
 
     out.push_str(&format!(
@@ -552,6 +612,39 @@ mod tests {
         let d = digest(snap).unwrap();
         assert!(d.contains("전력 상한 근접"), "{}", d);
         assert!(d.contains("99%"), "{}", d); // 345/350 = 98.6, rounded
+    }
+
+    #[test]
+    fn the_briefing_never_reports_spare_capacity() {
+        // Naming the empty machines turns this line into a queue ticket and
+        // people race for them. It is a product decision, so it is pinned here
+        // rather than left to the wording of a prompt.
+        let snap = r#"{"servers":[
+            {"name":"idle1","status":"ok","gpu_model":"x","loc":"roomA","watts":90,
+             "gpus":[{"util":0,"mem_used":4,"mem_total":24000,"temp":30,"power_limit":350,"fan":30}]},
+            {"name":"busy1","status":"ok","gpu_model":"x","loc":"roomB","watts":900,
+             "gpus":[{"util":99,"mem_used":23000,"mem_total":24000,"temp":70,"power_limit":1000,"fan":99}]}
+        ]}"#;
+        let d = digest(snap).unwrap();
+        for banned in ["비어 있", "여유", "유휴", "사용 가능"] {
+            assert!(!d.contains(banned), "digest leaked spare capacity ({}):\n{}", banned, d);
+        }
+    }
+
+    #[test]
+    fn the_briefing_carries_power_heat_and_memory() {
+        let snap = r#"{"servers":[
+            {"name":"g1","status":"ok","gpu_model":"x","loc":"roomA","watts":120,
+             "gpus":[{"util":10,"mem_used":100,"mem_total":24000,"temp":40,"power_limit":350,"fan":30}]},
+            {"name":"g2","status":"ok","gpu_model":"x","loc":"roomB","watts":900,
+             "gpus":[{"util":99,"mem_used":23500,"mem_total":24000,"temp":70,"power_limit":1000,"fan":98}]}
+        ]}"#;
+        let d = digest_with_trend(snap, Some(800.0)).unwrap();
+        assert!(d.contains("전력 최다 위치: roomB 900 W"), "{}", d);
+        assert!(d.contains("VRAM 거의 참: g2 98%"), "{}", d);
+        assert!(d.contains("팬 최대: g2 98%"), "{}", d);
+        // 1020 now vs 800 an hour ago.
+        assert!(d.contains("1시간 전 대비 전력: +220 W"), "{}", d);
     }
 
     #[test]
