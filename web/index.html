@@ -91,15 +91,8 @@
          color: var(--fg2); cursor: pointer; -webkit-tap-highlight-color: transparent; }
   .tgl:active { background: var(--bg1); }
 
-  .stats { display: flex; gap: 6px; margin-top: 10px; }
-  .stat { flex: 1 1 0; min-width: 0; background: var(--bg0h); border: 1px solid var(--bg2);
-          border-radius: var(--radius); padding: 6px 9px; }
-  .stat b { display: block; font-size: 18px; font-weight: 700; line-height: 1.15;
-            letter-spacing: -.02em; color: var(--fg0); }
-  .stat i { font-style: normal; font-size: 10px; color: var(--fg4);
-            text-transform: uppercase; letter-spacing: .04em; }
-  .stat.free b { color: var(--green); }
-  .stat.busy b { color: var(--orange); }
+  /* The four stat boxes used to live here. They spent a band of the fold on
+     four numbers the briefing now states in a sentence. */
 
   /* one-touch jump bar */
   .jump { display: flex; gap: 4px; margin-top: 8px; overflow-x: auto;
@@ -410,12 +403,6 @@
         id="ai-text"></span></span>
     </div>
 
-    <div class="stats">
-      <div class="stat free"><b id="s-free">–</b><i>여유 GPU</i></div>
-      <div class="stat busy"><b id="s-busy">–</b><i>사용 중</i></div>
-      <div class="stat"><b id="s-tot">–</b><i>전체 GPU</i></div>
-      <div class="stat"><b id="s-srv">–</b><i>서버</i></div>
-    </div>
     <!-- One-touch jump: tap a server to bring its card into view, no scrolling. -->
     <div class="jump" id="jump" aria-label="서버로 이동"></div>
     <div class="tabs" role="tablist">
@@ -1018,11 +1005,9 @@ function render() {
     return;
   }
 
-  setText($("s-free"), sm.gpus_free == null ? "–" : String(sm.gpus_free));
-  setText($("s-busy"), sm.gpus_busy == null ? "–" : String(sm.gpus_busy));
-  setText($("s-tot"), String(sm.gpus_total || 0));
-  setText($("s-srv"), (sm.servers_up || 0) + " / " + (sm.servers_total || 0));
-  setText($("hcount"), "· " + (sm.servers_total || 0) + "대");
+  // The counts moved into the briefing. Only the fleet size stays here, next
+  // to the title, because "13대" is what tells you nothing has gone missing.
+  setText($("hcount"), "· " + (sm.servers_up || 0) + "/" + (sm.servers_total || 0) + "대");
 
   var iv = d.poll_interval_sec || 30;
   var age = Math.max(0, Math.floor(Date.now() / 1000) - (d.generated_at || 0));

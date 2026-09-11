@@ -276,10 +276,11 @@ const PROMPT: &str = "\
 아래 \"판정\"·\"이상 징후\"·\"관측\"에 적힌 사실만 사용하세요.
 
 - 이상 징후가 있으면 그것부터. 없으면 \"이상 없음\"으로 시작하세요.
-- 그 다음 전력과 열을 말하세요: 전력 최다 서버와 위치, 최고 온도, VRAM이 거의 찬 서버, 팬이 최대인 서버, 1시간 전 대비 전력 변화. 적혀 있는 것 중 의미 있는 것을 고르세요.
-- **비어 있는 서버나 여유 GPU는 절대 언급하지 마세요.** 어디가 한가한지는 쓰지 않습니다.
+- 전체 규모(GPU 몇 대 중 몇 대 사용 중, 서버 응답 수)를 한 번 말하세요. 화면에 따로 표시되지 않으므로 이 문장이 유일한 출처입니다.
+- 그리고 전력과 열을 말하세요: 전력 최다 서버와 위치, 최고 온도, VRAM이 거의 찬 서버, 팬이 최대인 서버, 1시간 전 대비 전력 변화. 적혀 있는 것 중 의미 있는 것을 고르세요.
+- **어느 서버가 비어 있는지는 절대 쓰지 마세요.** 총계는 괜찮지만 한가한 서버의 이름을 대서는 안 됩니다.
 - 세거나 계산하거나 판단하지 마세요. 임계 판정과 집계는 이미 끝나 있습니다. 숫자는 그대로 옮기세요.
-- 적혀 있지 않은 것은 쓰지 마세요. \"참고 수치\"는 화면에 이미 있으니 반복하지 마세요.
+- 적혀 있지 않은 것은 쓰지 마세요.
 - 사실만 진술하세요. 권유하거나 지시하지 마세요.
 - 마크다운, 목록, 이모지 금지. 서두 금지.";
 
@@ -363,7 +364,11 @@ pub fn digest_with_trend(snapshot: &str, trend: Option<f64>) -> Option<String> {
         }
         let fmax = gpus.iter().map(|g| g.num_or("fan", 0.0)).fold(0.0f64, f64::max);
         if fmax >= FAN_ALERT {
-            fans_open.push(format!("{} {}%", name, fmax.round() as i64));
+            // Clamped for display only. nvidia-smi reports a percentage of a
+            // reference maximum and some cards return more than that -- 115 is
+            // a genuine reading, but printed in a sentence it reads as a bug,
+            // and at that point the fan is simply at its limit.
+            fans_open.push(format!("{} {}%", name, fmax.min(100.0).round() as i64));
         }
         let up = s.num_or("uptime_sec", 0.0);
         if up > 0.0 && up < 86_400.0 {
@@ -420,6 +425,13 @@ pub fn digest_with_trend(snapshot: &str, trend: Option<f64>) -> Option<String> {
     } else {
         format!("판정: 이상 징후 {}건\n이상 징후:\n", alerts.len())
     };
+    let totals = format!(
+        "전체 규모: GPU {}대 중 {}대 사용 중, 서버 {}대 중 {}대 응답",
+        tot,
+        busy,
+        lines.len() + down.len(),
+        lines.len()
+    );
     for a in &alerts {
         out.push_str("- ");
         out.push_str(a);
@@ -467,12 +479,11 @@ pub fn digest_with_trend(snapshot: &str, trend: Option<f64>) -> Option<String> {
         ));
     }
 
-    out.push_str(&format!(
-        "\n참고 수치 (요약에 반복하지 마세요): 전체 GPU {}/{} 사용중, 총 {} W\n\n서버별:\n",
-        busy,
-        tot,
-        watts.round() as i64
-    ));
+    // These used to be on screen in their own boxes and were marked "do not
+    // repeat". The boxes are gone, so the briefing is the only place they
+    // appear now.
+    out.push_str(&format!("- {}, 총 {} W\n", totals, watts.round() as i64));
+    out.push_str("\n서버별:\n");
     out.push_str(&lines.join("\n"));
     Some(out)
 }
@@ -626,9 +637,13 @@ mod tests {
              "gpus":[{"util":99,"mem_used":23000,"mem_total":24000,"temp":70,"power_limit":1000,"fan":99}]}
         ]}"#;
         let d = digest(snap).unwrap();
-        for banned in ["비어 있", "여유", "유휴", "사용 가능"] {
+        // Aggregates are fine -- "one of two in use" names nobody. What must
+        // never appear is a conclusion that points at the free machine, which
+        // is what turns the line into a queue ticket.
+        for banned in ["비어 있는 서버", "여유 서버", "유휴 서버", "사용 가능한 서버"] {
             assert!(!d.contains(banned), "digest leaked spare capacity ({}):\n{}", banned, d);
         }
+        assert!(d.contains("전체 규모: GPU 2대 중 1대 사용 중"), "{}", d);
     }
 
     #[test]
@@ -645,6 +660,19 @@ mod tests {
         assert!(d.contains("팬 최대: g2 98%"), "{}", d);
         // 1020 now vs 800 an hour ago.
         assert!(d.contains("1시간 전 대비 전력: +220 W"), "{}", d);
+        assert!(d.contains("서버 2대 중 2대 응답"), "{}", d);
+    }
+
+    #[test]
+    fn a_fan_above_its_reference_maximum_reads_as_100() {
+        let snap = r#"{"servers":[
+            {"name":"g1","status":"ok","gpu_model":"x","loc":"r","watts":300,
+             "gpus":[{"util":90,"mem_used":100,"mem_total":24000,"temp":70,
+                      "power_limit":350,"fan":115}]}
+        ]}"#;
+        let d = digest(snap).unwrap();
+        assert!(d.contains("팬 최대: g1 100%"), "{}", d);
+        assert!(!d.contains("115"), "a percentage over 100 reads as a bug:\n{}", d);
     }
 
     #[test]
