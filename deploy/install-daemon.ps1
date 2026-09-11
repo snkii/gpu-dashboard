@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Seonuk Kim, Human Interface Laboratory, Seoul National University
+﻿# Copyright (c) 2026 Seonuk Kim, Human Interface Laboratory, Seoul National University
 # SPDX-License-Identifier: MIT
 <#
     Keep the HIL GPU collector running across reboots, power cuts and crashes.
@@ -33,9 +33,19 @@ $Bin    = Join-Path $Root "bin"
 $Exe    = Join-Path $Bin  "hilmon.exe"
 $Rclone = Join-Path $Bin  "rclone.exe"
 $Out    = Join-Path $Root "out"
-$LogDir = Join-Path $env:LOCALAPPDATA "gpu-dashboard"
+# Beside the project, not under AppData. A scheduled task launched by this
+# account could not open a log in %LOCALAPPDATA%\gpu-dashboard for append --
+# it exited 1 before running anything, with nothing written anywhere to say
+# why -- while the identical command worked when run by hand. The collector
+# already writes its power log into this directory from the same task, so this
+# path is known to work.
+$LogDir = Join-Path $Root "logs"
 $Log    = Join-Path $LogDir "watchdog.log"
 $Task   = "HILGPUWatchdog"
+
+# One call every ten minutes is 144 a day, comfortably inside the free tier's
+# daily cap while still being fresh enough for a sentence about a cluster.
+$SummaryInterval = 600
 $Dest   = "$($S.Remote):$($S.Bucket)"
 
 foreach ($p in @($Exe, $Rclone)) {
@@ -57,21 +67,37 @@ $scripts = @{
     "up-first.cmd"  = "copy . $Dest --checksum --no-traverse"
     "up-status.cmd" = "copyto status.json $Dest/status.json"
     "up-stats.cmd"  = "copyto stats.json $Dest/stats.json"
+    "up-summary.cmd" = "copyto summary.json $Dest/summary.json"
 }
 foreach ($name in $scripts.Keys) {
     $body = "@echo off`r`n`"$Rclone`" $($scripts[$name])`r`n"
     Set-Content -Path (Join-Path $Bin $name) -Value $body -Encoding ascii -NoNewline
 }
 
-$inner = "`"$Exe`" --publish `"$Out`" --loop" +
-         " --upload-cmd $Bin\up-first.cmd" +
-         " --upload-cmd-tick $Bin\up-status.cmd" +
-         " --upload-cmd-stats $Bin\up-stats.cmd" +
-         " --stats-interval 60" +
-         " >> `"$Log`" 2>&1"
-# cmd /c strips the first and last quote of its argument, so the whole command
-# gets one extra pair for cmd to eat. cmd is here only for the >> redirection.
-$arguments = "/c `"$inner`""
+# The collector's command line lives in its own .cmd file too.
+#
+# `cmd /c "<long quoted command>"` only strips its outer quote pair under
+# conditions that are easy to fall out of. When it does not, the trailing quote
+# is left dangling, the redirect fails to parse, and cmd exits 1 having written
+# nothing at all -- no log, no process, no clue. That is precisely what adding
+# two more flags caused. A file has no outer quoting to get wrong.
+#
+# The summary needs no flag of its own to be safe: the collector looks for the
+# API key file and stays quiet when it is absent.
+$runner = Join-Path $Bin "run-collector.cmd"
+$runnerBody = @"
+@echo off
+rem Written by deploy/install-daemon.ps1. Edit that, not this.
+"$Exe" --publish "$Out" --loop ^
+  --upload-cmd "$Bin\up-first.cmd" ^
+  --upload-cmd-tick "$Bin\up-status.cmd" ^
+  --upload-cmd-stats "$Bin\up-stats.cmd" --stats-interval 60 ^
+  --upload-cmd-summary "$Bin\up-summary.cmd" --summary-interval $SummaryInterval ^
+  >> "$Log" 2>&1
+"@
+Set-Content -Path $runner -Value $runnerBody -Encoding ascii
+
+$arguments = "/c `"$runner`""
 
 if (Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) {
     # Unregister alone leaves a running instance holding the collector lock,

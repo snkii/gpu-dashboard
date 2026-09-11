@@ -64,6 +64,9 @@ metrics output instead. Verified per host during provisioning.
 | **Location** | Racks drawn as they are physically stacked, each slot coloured by draw against its power limit, with a per-room total-power trace. |
 | **Statistics** | Per-server and per-rack history over 6 hours, 24 hours, 7 days or everything stored — power, utilisation, temperature, busy GPUs, plus mean/peak draw, energy used and duty cycle. |
 
+An optional line at the top summarises the current state in prose. It is
+off unless a key is configured — see below.
+
 Gruvbox, dark by default, with a light toggle that persists. The page is a
 single HTML file with no framework, no build step and no third-party requests.
 
@@ -164,6 +167,30 @@ installs the metrics script, and pins the monitoring key to a forced command.
 Passwords for the privileged account are read at a masked prompt, held in
 memory for that host only, and never written to a file, a command line or shell
 history.
+
+### The written summary (optional)
+
+A sentence or two of prose at the top of the page, from Gemini. Off by default.
+To enable it, put an API key in a file — one line, nothing else:
+
+```
+~/.hilgpu/gemini.key          (%USERPROFILE%\.hilgpu\gemini.key on Windows)
+```
+
+That path is outside the repository on purpose. **The key must never reach the
+page**: a key shipped to the browser is a key handed to everyone who opens it.
+The call therefore happens on the collector machine and only the resulting text
+is published, as `summary.json`.
+
+What is sent is built from the same redacted snapshot that is already public,
+so the request reveals nothing a visitor could not read anyway. Note that free
+API tiers commonly reserve the right to review submitted content — which is
+tolerable precisely because this content is already public, and would not be if
+the snapshot were not redacted.
+
+The default cadence is one call every five minutes (288/day). `--summary-model`
+picks the model and `--summary-interval` the cadence. A failed call leaves the
+previous summary in place; a missing key simply hides the line.
 
 ### Deployment
 

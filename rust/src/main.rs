@@ -14,6 +14,7 @@
 
 mod collect;
 mod db;
+mod summary;
 mod gate;
 mod http;
 mod json;
@@ -35,6 +36,13 @@ struct Args {
     upload_cmd: Option<String>,
     upload_cmd_tick: Option<String>,
     upload_cmd_stats: Option<String>,
+    upload_cmd_summary: Option<String>,
+    summary_interval: u64,
+    summary_key: Option<String>,
+    summary_model: String,
+    summary_once: Option<String>,
+    summary_prompt: Option<String>,
+    summary_timeout: u32,
     stats_interval: u64,
     interval: u64,
     check: bool,
@@ -62,6 +70,17 @@ fn parse_args() -> Result<Args, String> {
         upload_cmd: None,
         upload_cmd_tick: None,
         upload_cmd_stats: None,
+        upload_cmd_summary: None,
+        summary_interval: 600,
+        summary_key: None,
+        // Measured: 1.4-2.2s on real snapshots. The non-lite 3.x models
+        // spend their whole token budget on reasoning and return a
+        // truncated fragment, or take fifteen seconds to say the same
+        // thing. See summary.rs for the prompt this was chosen with.
+        summary_model: "gemini-3.1-flash-lite".into(),
+        summary_once: None,
+        summary_prompt: None,
+        summary_timeout: 60,
         stats_interval: 60,
         interval: 2,
         check: false,
@@ -91,6 +110,17 @@ fn parse_args() -> Result<Args, String> {
             "--upload-cmd" => a.upload_cmd = Some(take(&mut i)?),
             "--upload-cmd-tick" => a.upload_cmd_tick = Some(take(&mut i)?),
             "--upload-cmd-stats" => a.upload_cmd_stats = Some(take(&mut i)?),
+            "--upload-cmd-summary" => a.upload_cmd_summary = Some(take(&mut i)?),
+            "--summary-key" => a.summary_key = Some(take(&mut i)?),
+            "--summary-model" => a.summary_model = take(&mut i)?,
+            "--summary-once" => a.summary_once = Some(take(&mut i)?),
+            "--summary-prompt" => a.summary_prompt = Some(take(&mut i)?),
+            "--summary-timeout" => {
+                a.summary_timeout = take(&mut i)?.parse().map_err(|_| "bad --summary-timeout")?;
+            }
+            "--summary-interval" => {
+                a.summary_interval = take(&mut i)?.parse().map_err(|_| "bad --summary-interval")?;
+            }
             "--stats-interval" => {
                 a.stats_interval = take(&mut i)?.parse().map_err(|_| "bad --stats-interval")?;
             }
@@ -132,7 +162,12 @@ fn print_help() {
 \
          --upload-cmd-stats CMD   run in DIR after each stats.json rewrite
 \
-         --stats-interval SEC     stats.json cadence (default 60)"
+         --stats-interval SEC     stats.json cadence (default 60)\n\
+         --summary-key PATH       file holding a Gemini API key (default:\n\
+                                  ~/.hilgpu/gemini.key; absent = feature off)\n\
+         --summary-model NAME     Gemini model (default gemini-2.5-flash)\n\
+         --summary-interval SEC   summary.json cadence (default 300)\n\
+         --upload-cmd-summary CMD run in DIR after each summary rewrite"
     );
 }
 
@@ -156,6 +191,13 @@ fn main() {
 
     if args.rate {
         show_rate(&cfg);
+        return;
+    }
+
+    // One-shot summary, for trying prompts against real data. Reads the
+    // published snapshot, so it needs no collector and takes no lock.
+    if let Some(dir) = args.summary_once.clone() {
+        run_summary_once(&args, &dir);
         return;
     }
 
@@ -368,7 +410,20 @@ fn run_publish(c: &Arc<Collector>, args: &Args, dir: &str, public: bool) {
     );
     wait_for_first(c, n, 45);
 
+    let key_path = summary_key_path(args);
+    let mut summarizer = summary::Summarizer::new(key_path.clone(), args.summary_model.clone());
+    summarizer.set_timeout(args.summary_timeout);
+    if summarizer.enabled() {
+        println!(
+            "{} summary: {} every {}s",
+            stamp(),
+            args.summary_model,
+            args.summary_interval
+        );
+    }
+
     let mut first = true;
+    let mut last_summary = 0.0f64;
     let mut last_stats = 0.0f64;
     let mut last_prune = gate::now();
     loop {
@@ -405,6 +460,30 @@ fn run_publish(c: &Arc<Collector>, args: &Args, dir: &str, public: bool) {
                     println!("{}", m);
                 }
                 Err(e) => eprintln!("stats publish error: {}", e),
+            }
+        }
+
+        // The written summary. Slowest cadence of the three: it costs an API
+        // call, and a sentence about a cluster does not change in a minute.
+        if summarizer.enabled() && now - last_summary >= args.summary_interval as f64 {
+            last_summary = now;
+            if summarizer.refresh(&body, now as u32) {
+                let sbody =
+                    summary::write_json(&summarizer.text, summarizer.ts, args.summary_model.as_str());
+                match write_atomic(dir, "summary.json", sbody.as_bytes()) {
+                    Ok(()) => {
+                        let mut m = format!("{}   summary updated", stamp());
+                        if let Some(cmd) = args.upload_cmd_summary.clone().filter(|_| !first) {
+                            match run_shell(&cmd, dir) {
+                                Ok(true) => m.push_str(" | upload ok"),
+                                Ok(false) => m.push_str(" | upload FAILED"),
+                                Err(e) => m.push_str(&format!(" | upload error {}", e)),
+                            }
+                        }
+                        println!("{}", m);
+                    }
+                    Err(e) => eprintln!("summary publish error: {}", e),
+                }
             }
         }
 
@@ -468,6 +547,77 @@ fn run_publish(c: &Arc<Collector>, args: &Args, dir: &str, public: bool) {
             (args.interval as f64 - spent).max(0.5),
         ));
     }
+}
+
+fn run_summary_once(args: &Args, dir: &str) {
+    let path = PathBuf::from(dir).join("status.json");
+    let snap = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot read {}: {}", path.display(), e);
+            std::process::exit(1);
+        }
+    };
+    let facts = match summary::digest(&snap) {
+        Some(f) => f,
+        None => {
+            eprintln!("{} has no servers to summarise", path.display());
+            std::process::exit(1);
+        }
+    };
+
+    let key_path = summary_key_path(args);
+    let mut s = summary::Summarizer::new(key_path.clone(), args.summary_model.clone());
+    s.set_timeout(args.summary_timeout);
+    if let Some(p) = &args.summary_prompt {
+        match std::fs::read_to_string(p) {
+            Ok(t) => s.set_prompt(t.trim().to_string()),
+            Err(e) => {
+                eprintln!("cannot read prompt {}: {}", p, e);
+                std::process::exit(1);
+            }
+        }
+    }
+    let key = match s.read_key() {
+        Some(k) => k,
+        None => {
+            eprintln!("no API key at {}", key_path.display());
+            std::process::exit(1);
+        }
+    };
+
+    println!("model   : {}", args.summary_model);
+    println!("prompt  : {} chars", s.prompt().chars().count());
+    println!("facts   : {} chars\n", facts.chars().count());
+
+    let t0 = std::time::Instant::now();
+    match s.ask_with(&key, s.prompt(), &facts) {
+        Ok(t) => {
+            println!("--- answer ({:.1}s, {} chars) ---", t0.elapsed().as_secs_f64(), t.chars().count());
+            println!("{}", t);
+        }
+        Err(e) => {
+            println!("--- FAILED after {:.1}s ---", t0.elapsed().as_secs_f64());
+            println!("{}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Where the API key lives: the flag if given, else beside the other state.
+fn summary_key_path(args: &Args) -> PathBuf {
+    args.summary_key
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(
+                std::env::var("USERPROFILE")
+                    .or_else(|_| std::env::var("HOME"))
+                    .unwrap_or_default(),
+            )
+            .join(".hilgpu")
+            .join("gemini.key")
+        })
 }
 
 fn run_shell(cmd: &str, cwd: &str) -> std::io::Result<bool> {
