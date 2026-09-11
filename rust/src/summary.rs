@@ -277,7 +277,7 @@ const PROMPT: &str = "\
 
 - 이상 징후가 있으면 그것부터. 없으면 \"이상 없음\"으로 시작하세요.
 - 전체 규모(GPU 몇 대 중 몇 대 사용 중, 서버 응답 수)를 한 번 말하세요. 화면에 따로 표시되지 않으므로 이 문장이 유일한 출처입니다.
-- 그리고 전력과 열을 말하세요: 전력 최다 서버와 위치, 최고 온도, VRAM이 거의 찬 서버, 팬이 최대인 서버, 1시간 전 대비 전력 변화. 적혀 있는 것 중 의미 있는 것을 고르세요.
+- 그리고 전력과 열을 말하세요: 전력 최다 서버와 랙, 최고 온도, VRAM이 거의 찬 서버, 팬이 최대인 서버, 1시간 전 대비 전력 변화. 적혀 있는 것 중 의미 있는 것을 고르세요.
 - **어느 서버가 비어 있는지는 절대 쓰지 마세요.** 총계는 괜찮지만 한가한 서버의 이름을 대서는 안 됩니다.
 - 세거나 계산하거나 판단하지 마세요. 임계 판정과 집계는 이미 끝나 있습니다. 숫자는 그대로 옮기세요.
 - 적혀 있지 않은 것은 쓰지 마세요.
@@ -399,7 +399,7 @@ pub fn digest_with_trend(snapshot: &str, trend: Option<f64>) -> Option<String> {
             thirstiest = Some((name.to_string(), w, cap));
         }
         lines.push(format!(
-            "{} ({}): GPU {}/{} 사용중, {} W, 최고 {}도, 위치 {}",
+            "{} ({}): GPU {}/{} 사용중, {} W, 최고 {}도, 랙 {}",
             name,
             s.str_or("gpu_model", ""),
             b,
@@ -457,7 +457,7 @@ pub fn digest_with_trend(snapshot: &str, trend: Option<f64>) -> Option<String> {
     let mut rooms: Vec<(&String, &f64)> = by_room.iter().collect();
     rooms.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
     if let Some((room, w)) = rooms.first() {
-        out.push_str(&format!("- 전력 최다 위치: {} {} W\n", room, w.round() as i64));
+        out.push_str(&format!("- 전력 최다 랙: {} {} W\n", room, w.round() as i64));
     }
     if !vram_tight.is_empty() {
         out.push_str(&format!("- VRAM 거의 참: {}\n", vram_tight.join(", ")));
@@ -573,7 +573,7 @@ mod tests {
         let d = digest(snap).unwrap();
         assert!(d.contains("GPU 1/2 사용중"), "{}", d);
         assert!(d.contains("g2: 응답 없음"), "{}", d);
-        assert!(d.contains("g1 (3090): GPU 1/2 사용중, 900 W, 최고 70도, 위치 a"), "{}", d);
+        assert!(d.contains("g1 (3090): GPU 1/2 사용중, 900 W, 최고 70도, 랙 a"), "{}", d);
         assert!(d.contains("전력 최다: g1 900 W"), "{}", d);
         assert!(d.contains("최고 온도: g1 70도"), "{}", d);
     }
@@ -655,7 +655,7 @@ mod tests {
              "gpus":[{"util":99,"mem_used":23500,"mem_total":24000,"temp":70,"power_limit":1000,"fan":98}]}
         ]}"#;
         let d = digest_with_trend(snap, Some(800.0)).unwrap();
-        assert!(d.contains("전력 최다 위치: roomB 900 W"), "{}", d);
+        assert!(d.contains("전력 최다 랙: roomB 900 W"), "{}", d);
         assert!(d.contains("VRAM 거의 참: g2 98%"), "{}", d);
         assert!(d.contains("팬 최대: g2 98%"), "{}", d);
         // 1020 now vs 800 an hour ago.
