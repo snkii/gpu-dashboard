@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Seonuk Kim, Human Interface Laboratory, Seoul National University
+# SPDX-License-Identifier: MIT
+[package]
+name = "hilmon"
+version = "0.1.0"
+edition = "2021"
+description = "GPU dashboard - streaming collector and dashboard server"
+authors = ["Seonuk Kim, Human Interface Laboratory, Seoul National University"]
+license = "MIT"
+repository = "https://github.com/snkii/gpu-dashboard"
+
+# No dependencies on purpose. Everything here (JSON, HTTP, gzip-free responses,
+# file locking, subprocess management) is small enough to write directly, and a
+# dependency-free build means `cargo build` works on a lab machine with no
+# network and produces one binary with nothing to install alongside it.
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -1,0 +1,38 @@
+# Anything here either identifies the lab's network or is rebuilt from source.
+#
+# The rule of thumb: if it names a host, a path on someone's machine, or an
+# account, it does not belong in a public repository. Start from
+# servers.example.json instead.
+
+# Real inventory: internal hostnames, IP addresses, room numbers, rack layout.
+/servers.json
+/servers.*.json
+!/servers.example.json
+
+# Generated at install time; they embed absolute paths and the storage remote.
+/bin/
+
+# Runtime state.
+/out/
+/logs/
+/stats/
+
+# Build output.
+/rust/target/
+__pycache__/
+*.pyc
+
+# Editor and backup droppings.
+*.bak
+*.orig
+*.rej
+.DS_Store
+Thumbs.db
+web/.index.html.*
+
+# Deployment identifiers: paths, bucket, Cloudflare account, domain.
+/deploy/local.settings.ps1
+
+# University emblem: a trademark, and unused by the page (the generated icons
+# come from the lab's own logo). Kept locally, not published.
+/web/icons/emblem.png

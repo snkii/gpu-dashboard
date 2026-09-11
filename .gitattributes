@@ -1,0 +1,28 @@
+# Line endings.
+#
+# This matters more than usual here. The shell scripts are not just run on
+# Linux, they are read and written onto the monitored servers -- and a script
+# that arrives with CRLF fails at the shebang with an error that names no
+# cause. The Git hook has the same problem on a Linux clone. So: LF, always,
+# regardless of the checkout platform.
+
+* text=auto eol=lf
+
+*.sh        text eol=lf
+.githooks/* text eol=lf
+*.py        text eol=lf
+*.rs        text eol=lf
+*.json      text eol=lf
+*.toml      text eol=lf
+*.md        text eol=lf
+*.html      text eol=lf
+
+# PowerShell is Windows-only here and the shipped scripts are edited there.
+*.ps1       text eol=crlf
+*.cmd       text eol=crlf
+
+# Never touch binaries.
+*.png       binary
+*.ico       binary
+*.exe       binary
+*.bin       binary

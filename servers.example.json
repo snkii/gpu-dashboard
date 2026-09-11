@@ -1,0 +1,67 @@
+{
+  "_comment": "Copy to servers.json and fill in your own hosts. servers.json is gitignored because it names internal hosts, rooms and rack positions. min_ssh_interval_sec is a hard floor between SSH connection attempts, enforced across processes: campus networks flag a host that opens several SSH connections per second, so never lower it below 2.0.",
+
+  "ssh_user": "gpumon",
+  "public_mode": true,
+
+  "min_ssh_interval_sec": 2.5,
+  "max_backoff_sec": 900,
+  "ssh_connect_timeout": 6,
+  "ssh_command_timeout": 15,
+
+  "stats_period_sec": 10,
+  "stats_keep_days": 365,
+
+  "servers": [
+    {
+      "name": "gpu01",
+      "host": "gpu01.example.edu",
+      "port": 22,
+      "gpu": "3090 24GB",
+      "n_gpu": 4,
+      "loc": "room-a",
+      "enabled": true,
+      "provisioned": false,
+      "identity": "~/.ssh/gpumon"
+    },
+    {
+      "name": "gpu02",
+      "host": "198.51.100.20",
+      "port": 22,
+      "gpu": "4090 24GB",
+      "n_gpu": 8,
+      "loc": "room-a",
+      "enabled": true,
+      "provisioned": false,
+      "identity": "~/.ssh/gpumon",
+      "pin_address": true,
+      "note": "No DNS record for this host; the literal address is deliberate. pin_address makes the loader refuse a hostname here, so nobody can 'tidy it up' and silently take the host offline."
+    },
+    {
+      "name": "gpu03",
+      "host": "gpu03.example.edu",
+      "port": 22,
+      "gpu": "2080 Ti 11GB",
+      "n_gpu": 8,
+      "loc": "room-b",
+      "enabled": false,
+      "provisioned": false,
+      "identity": "~/.ssh/gpumon",
+      "note": "enabled:false keeps the collector away from a host whose key is not installed yet. Retrying one you cannot authenticate to just feeds its fail2ban."
+    }
+  ],
+
+  "racks": [
+    {
+      "room": "Room A",
+      "short": "room-a",
+      "note": "Slots are listed top to bottom, as physically racked.",
+      "slots": ["gpu01", "gpu02"]
+    },
+    {
+      "room": "Room B",
+      "short": "room-b",
+      "slots": ["gpu03", "(empty)"]
+    }
+  ]
+}

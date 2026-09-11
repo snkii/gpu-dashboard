@@ -1,0 +1,1423 @@
+<!doctype html>
+<!--
+  Copyright (c) 2026 Seonuk Kim, Human Interface Laboratory, Seoul National University
+  SPDX-License-Identifier: MIT
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#282828">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>HIL GPU</title>
+<link rel="icon" href="icons/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="icons/icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="manifest" href="icons/site.webmanifest">
+<meta name="apple-mobile-web-app-title" content="HIL GPU">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta property="og:title" content="HIL GPU">
+<meta property="og:description" content="한눈에 보는 연구실 GPU 상황">
+<meta property="og:image" content="icons/og-image.png">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  /* Gruvbox, two palettes. Dark is the DEFAULT (setTheme stamps
+     data-theme="dark" unless the viewer saved "light"), so the tokens below
+     are the light variant and the block after it overrides them. Neither
+     follows the OS preference: the page looks the same everywhere until the
+     viewer presses the toggle. */
+  :root {
+    --bg0h: #f9f5d7; --bg0: #fbf1c7; --bg1: #ebdbb2; --bg2: #d5c4a1;
+    --bg3: #bdae93; --bg4: #a89984;
+    --fg0: #282828; --fg1: #3c3836; --fg2: #504945; --fg3: #665c54; --fg4: #7c6f64;
+    --red: #9d0006;    --red-b: #cc241d;
+    --green: #79740e;  --green-b: #98971a;
+    --yellow: #b57614; --yellow-b: #d79921;
+    --blue: #076678;   --blue-b: #458588;
+    --purple: #8f3f71; --purple-b: #b16286;
+    --aqua: #427b58;   --aqua-b: #689d6a;
+    --orange: #af3a03; --orange-b: #d65d0e;
+    --ok-bg: #e8ebc0; --busy-bg: #f6e2c4; --warn-bg: #fbf0d0;
+    --cell-ink: rgba(251,241,199,.95);
+    --shadow: 0 1px 2px rgba(60,56,54,.10), 0 2px 8px rgba(60,56,54,.06);
+    --radius: 10px;
+  }
+  /* Gruvbox dark - the default. Same token roles, swapped values. */
+  :root[data-theme="dark"] {
+    --bg0h: #32302f; --bg0: #282828; --bg1: #3c3836; --bg2: #504945;
+    --bg3: #665c54; --bg4: #7c6f64;
+    --fg0: #fbf1c7; --fg1: #ebdbb2; --fg2: #d5c4a1; --fg3: #bdae93; --fg4: #a89984;
+    --red: #fb4934;    --red-b: #fb4934;
+    --green: #b8bb26;  --green-b: #98971a;
+    --yellow: #fabd2f; --yellow-b: #d79921;
+    --blue: #83a598;   --blue-b: #458588;
+    --purple: #d3869b; --purple-b: #b16286;
+    --aqua: #8ec07c;   --aqua-b: #689d6a;
+    --orange: #fe8019; --orange-b: #d65d0e;
+    --ok-bg: #32361f; --busy-bg: #3d2b13; --warn-bg: #3a2f14;
+    --cell-ink: rgba(40,40,40,.95);
+    --shadow: 0 1px 2px rgba(0,0,0,.35), 0 2px 10px rgba(0,0,0,.25);
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; background: var(--bg0); }
+  body {
+    margin: 0; background: var(--bg0); color: var(--fg1);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+          "Noto Sans KR", "Malgun Gothic", Roboto, sans-serif;
+    font-variant-numeric: tabular-nums;
+    padding-bottom: calc(24px + env(safe-area-inset-bottom));
+  }
+  .wrap { max-width: 1560px; margin: 0 auto; padding: 12px 12px 32px; }
+
+  header {
+    position: sticky; top: 0; z-index: 20; margin: -12px -12px 12px;
+    padding: 11px 12px 0; background: var(--bg0);
+    border-bottom: 1px solid var(--bg2);
+  }
+  .hrow { display: flex; align-items: center; gap: 9px; }
+  h1 { margin: 0; font-size: 15.5px; font-weight: 700; letter-spacing: -.01em; color: var(--fg0); }
+  h1 span { color: var(--fg4); font-weight: 400; font-size: 12.5px; }
+  .meta { margin-left: auto; font-size: 11.5px; color: var(--fg4);
+          display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green-b); flex: none; }
+  .dot.warn { background: var(--yellow-b); }
+  .dot.err { background: var(--red-b); }
+
+  .tgl { flex: none; width: 26px; height: 26px; padding: 0; font-size: 13px; line-height: 1;
+         border: 1px solid var(--bg3); border-radius: 7px; background: var(--bg0h);
+         color: var(--fg2); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .tgl:active { background: var(--bg1); }
+
+  .stats { display: flex; gap: 6px; margin-top: 10px; }
+  .stat { flex: 1 1 0; min-width: 0; background: var(--bg0h); border: 1px solid var(--bg2);
+          border-radius: var(--radius); padding: 6px 9px; }
+  .stat b { display: block; font-size: 18px; font-weight: 700; line-height: 1.15;
+            letter-spacing: -.02em; color: var(--fg0); }
+  .stat i { font-style: normal; font-size: 10px; color: var(--fg4);
+            text-transform: uppercase; letter-spacing: .04em; }
+  .stat.free b { color: var(--green); }
+  .stat.busy b { color: var(--orange); }
+
+  /* one-touch jump bar */
+  .jump { display: flex; gap: 4px; margin-top: 8px; overflow-x: auto;
+          scrollbar-width: none; -webkit-overflow-scrolling: touch;
+          scroll-snap-type: x proximity; }
+  .jump::-webkit-scrollbar { display: none; }
+  .jb { flex: none; font: inherit; scroll-snap-align: start;
+        display: grid; gap: 2px; justify-items: center;
+        padding: 4px 8px 5px; min-width: 52px; border-radius: 8px;
+        border: 1px solid var(--bg3); background: var(--bg0h); color: var(--fg2);
+        cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .jb:active { background: var(--bg1); }
+  .jb b { font-size: 11.5px; font-weight: 700; letter-spacing: -.02em; line-height: 1.1; }
+  .jb i { font-style: normal; font-size: 9.5px; color: var(--fg4); line-height: 1; }
+  /* Availability at a glance, same thresholds as everywhere else. */
+  .jb[data-a="free"] { border-color: var(--green-b); }
+  .jb[data-a="free"] i { color: var(--green); font-weight: 700; }
+  .jb[data-a="full"] { border-color: var(--orange-b); background: var(--busy-bg); }
+  .jb[data-a="full"] i { color: var(--orange); font-weight: 700; }
+  .jb[data-a="down"] { border-style: dashed; background: var(--bg1); }
+  .jb[data-a="wait"] { border-style: dotted; }
+  .jb[data-a="wait"] b, .jb[data-a="wait"] i { color: var(--fg4); }
+  .jb[data-a="down"] b, .jb[data-a="down"] i { color: var(--fg4); }
+  /* Sticky header would otherwise cover the card we just jumped to. */
+  .card { scroll-margin-top: 200px; }
+  .card.flash, .sbox.flash { animation: fl 1.1s ease-out; }
+  @keyframes fl {
+    0%, 30% { box-shadow: 0 0 0 3px var(--blue-b), var(--shadow); }
+    100%    { box-shadow: 0 0 0 0 rgba(69,133,136,0), var(--shadow); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .card.flash, .sbox.flash { animation: none; }
+  }
+
+  .tabs { display: flex; gap: 4px; margin-top: 9px; }
+  .tab { font: inherit; font-size: 13px; font-weight: 700; padding: 7px 15px;
+         border: 1px solid transparent; border-bottom: none; background: none;
+         color: var(--fg4); cursor: pointer; border-radius: 8px 8px 0 0;
+         margin-bottom: -1px; -webkit-tap-highlight-color: transparent; }
+  .tab[aria-selected="true"] { background: var(--bg0h); border-color: var(--bg2);
+         color: var(--fg0); }
+  .tab.alert { color: var(--red); }
+  .tab.alert[aria-selected="true"] { color: var(--red); border-color: var(--red-b); }
+
+  .banner { margin: 0 0 10px; padding: 9px 11px; border-radius: var(--radius);
+            font-size: 12.5px; background: var(--warn-bg); color: var(--orange);
+            border: 1px solid var(--yellow-b); }
+
+  /* ---------- server view ---------- */
+  /* Columns are real elements, filled across by columnize().
+
+     Grid rows are as tall as their tallest cell, so a 4-GPU card beside an
+     8-GPU card left a large hole underneath it -- that is why this is not a
+     grid. CSS column-count has no holes but fills each column to the bottom
+     before starting the next, so the cards read downwards instead of across.
+     Columns filled by hand give both: order across, no holes.
+     (grid-template-rows: masonry would do it in CSS alone, but is not shipped
+     broadly enough to rely on.) */
+  .grid, .sgrids { display: flex; gap: 10px; align-items: flex-start; }
+  .gcol { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column;
+          gap: 10px; }
+
+  /* No content-visibility here: in a multi-column flow the browser needs the
+     real height of every card to balance the columns, and a placeholder size
+     makes the layout jump on scroll. */
+  .card { background: var(--bg0h); border: 1px solid var(--bg2); border-radius: var(--radius);
+          box-shadow: var(--shadow); overflow: hidden; }
+  .card.offline { background: var(--bg1); }
+  .chead { display: flex; align-items: center; gap: 8px; padding: 9px 11px;
+           border-bottom: 1px solid var(--bg2); }
+  .name { font-size: 15px; font-weight: 700; color: var(--fg0); letter-spacing: -.01em; }
+  .model { font-size: 11.5px; color: var(--fg4); overflow: hidden;
+           text-overflow: ellipsis; white-space: nowrap; }
+  .badge { margin-left: auto; flex: none; font-size: 10.5px; font-weight: 700;
+           padding: 3px 8px; border-radius: 99px; letter-spacing: .02em; }
+  .badge[data-s="ok"]   { background: var(--ok-bg); color: var(--green); }
+  .badge[data-s="busy"] { background: var(--busy-bg); color: var(--orange); }
+  .badge[data-s="down"] { background: var(--bg2); color: var(--fg3); }
+  .badge[data-s="wait"] { background: var(--bg1); color: var(--fg4); }
+
+  /* Pin. The button is bigger than the glyph so it stays tappable on a phone. */
+  .pin { flex: none; margin-left: auto; width: 28px; height: 28px; padding: 0;
+         display: flex; align-items: center; justify-content: center;
+         border: none; background: none; cursor: pointer; border-radius: 7px;
+         color: var(--fg4); opacity: .5; -webkit-tap-highlight-color: transparent; }
+  .pin:hover { opacity: 1; background: var(--bg1); }
+  .pin svg { width: 15px; height: 15px; fill: currentColor; }
+  .pin[aria-pressed="true"] { color: var(--yellow); opacity: 1; }
+  /* The badge claims the free space unless a pin is there to claim it first. */
+  .pin + .badge { margin-left: 6px; }
+  .card.pinned { border-color: var(--yellow-b); }
+  .card.pinned .chead { background: var(--warn-bg); }
+
+  /* Power sparkline: one <svg> per server, redrawn from watt_history. */
+  .spark { display: block; width: 100%; height: 34px; background: var(--bg1);
+           border-bottom: 1px solid var(--bg2); }
+  .spark .ln { fill: none; stroke: var(--purple); stroke-width: 1.5;
+               vector-effect: non-scaling-stroke; }
+  .spark .ar { fill: var(--purple); opacity: .16; stroke: none; }
+  .sparkwrap { position: relative; }
+  .sparkwrap b { position: absolute; right: 8px; top: 4px; font-size: 10.5px;
+                 font-weight: 700; color: var(--purple); letter-spacing: -.02em; }
+  .sparkwrap i { position: absolute; left: 8px; top: 4px; font-size: 9.5px;
+                 font-style: normal; color: var(--fg4); }
+
+  .sub { display: flex; gap: 9px; flex-wrap: wrap; padding: 6px 11px; font-size: 11px;
+         color: var(--fg4); border-bottom: 1px solid var(--bg2); }
+
+  .gpus { padding: 2px 0; }
+  .gpu { padding: 7px 11px; }
+  .gpu + .gpu { border-top: 1px solid var(--bg1); }
+  .ghead { display: flex; align-items: baseline; gap: 7px; margin-bottom: 4px; }
+  .gidx { font-size: 10.5px; font-weight: 700; color: var(--fg3); min-width: 17px;
+          text-align: center; background: var(--bg1); border-radius: 4px; padding: 1px 0;
+          flex: none; }
+  .gpu[data-on="1"] .gidx { background: var(--orange); color: var(--bg0h); }
+  .gname { font-size: 11px; color: var(--fg2); font-weight: 600; overflow: hidden;
+           text-overflow: ellipsis; white-space: nowrap; }
+  .gvram { font-size: 10.5px; color: var(--fg4); margin-left: auto; flex: none; }
+
+  .bars { display: grid; gap: 3px; }
+  .bar { display: grid; grid-template-columns: 28px 1fr auto; gap: 6px; align-items: center; }
+  .bl { font-size: 9.5px; color: var(--fg4); text-transform: uppercase; letter-spacing: .04em; }
+  .track { height: 6px; border-radius: 99px; background: var(--bg2); overflow: hidden; }
+  .fill { height: 100%; border-radius: 99px; background: var(--blue-b);
+          transform-origin: left center; will-change: transform;
+          transition: transform .3s linear, background-color .3s linear; }
+  .val { font-size: 11px; color: var(--fg2); min-width: 78px; text-align: right; }
+  @media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
+
+  .procs { margin-top: 4px; margin-left: 34px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .procs:empty { display: none; }
+  .proc { font-size: 10.5px; padding: 1px 7px; border-radius: 99px;
+          background: var(--busy-bg); color: var(--orange); }
+  .proc em { font-style: normal; opacity: .75; }
+
+  .err { padding: 12px 11px; font-size: 12px; color: var(--fg3); }
+
+  /* ---------- location / rack view ---------- */
+  .rooms { display: grid; gap: 10px; grid-template-columns: 1fr; align-items: start; }
+  @media (min-width: 700px)  { .rooms { grid-template-columns: repeat(2, 1fr); } }
+  @media (min-width: 1040px) { .rooms { grid-template-columns: repeat(4, 1fr); } }
+
+  .room { background: var(--bg0h); border: 1px solid var(--bg2);
+          border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+  .rhead { padding: 9px 11px; border-bottom: 1px solid var(--bg2); }
+  .rhead b { display: block; font-size: 13.5px; color: var(--fg0); font-weight: 700; }
+  .rhead i { font-style: normal; font-size: 10.5px; color: var(--fg4); }
+  /* The rack: units stacked top-to-bottom in the physical order recorded in
+     the lab spreadsheet. */
+  /* align-content:start stops the grid stretching rows to fill the room card,
+     which is what made an empty slot taller than a populated one. min-height
+     then makes every slot -- populated, down, or retired -- the same size, so
+     the racks read as a real rack. */
+  .rack { padding: 8px; display: grid; gap: 5px; background: var(--bg1);
+          align-content: start; }
+  .unit { background: var(--bg0h); border: 1px solid var(--bg3); border-radius: 6px;
+          min-height: 56px; align-content: center;
+          padding: 6px 8px; display: grid; gap: 5px; }
+  /* "vacant", not "empty": .empty is the page-level empty-state message and
+     carries padding:44px 20px, which silently doubled the height of every
+     unpopulated rack slot. */
+  .unit.vacant { background: var(--bg1); border-style: dashed; }
+  .unit.offline { background: var(--bg2); }
+  .uhead { display: flex; align-items: baseline; gap: 6px; }
+  .uname { font-size: 12.5px; font-weight: 700; color: var(--fg0); flex: none; }
+  .umodel { font-size: 10px; color: var(--fg4); overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+  .ustat { margin-left: auto; flex: none; font-size: 10px; font-weight: 700; color: var(--fg3); }
+  /* One cell per physical GPU, coloured by that GPU's own utilisation. */
+  .cells { display: flex; gap: 3px; }
+  .cell { flex: 1 1 0; min-width: 0; height: 19px; border-radius: 3px;
+          background: var(--bg2); display: flex; align-items: center;
+          justify-content: center; transition: background-color .3s linear; }
+  .cell span { font-size: 9px; font-weight: 700; letter-spacing: -.03em;
+               color: var(--cell-ink); }
+  .cell[data-lv="idle"] { background: var(--bg2); }
+  .cell[data-lv="idle"] span { color: var(--fg4); }
+  .cell[data-lv="lo"]   { background: var(--green-b); }
+  .cell[data-lv="mid"]  { background: var(--yellow-b); }
+  .cell[data-lv="hi"]   { background: var(--orange-b); }
+  .cell[data-lv="max"]  { background: var(--red-b); }
+  .cell[data-lv="na"]   { background: var(--bg3); }
+  .cell[data-lv="na"] span { color: var(--fg3); }
+
+  /* ---- statistics view ---- */
+  .segs { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 10px; }
+  .seg { font: inherit; font-size: 12px; font-weight: 700; padding: 5px 11px;
+         border-radius: 999px; border: 1px solid var(--bg2); background: var(--bg0h);
+         color: var(--fg3); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .seg[aria-pressed="true"] { background: var(--blue-b); border-color: var(--blue-b);
+                              color: var(--bg0); }
+  .seggap { width: 10px; }
+
+  .chart { display: block; width: 100%; height: 58px; background: var(--bg1);
+           border-radius: 6px; }
+  .chart .ln { fill: none; stroke: var(--m); stroke-width: 1.5;
+               /* round caps so an isolated slot still shows as a dot */
+               stroke-linecap: round; stroke-linejoin: round;
+               vector-effect: non-scaling-stroke; }
+  .chart .ar { fill: var(--m); opacity: .16; stroke: none; }
+  .chart .avg { stroke: var(--fg4); stroke-width: 1; stroke-dasharray: 3 3;
+                opacity: .55; vector-effect: non-scaling-stroke; }
+  .cwrap { position: relative; }
+  .cwrap .cmax { position: absolute; left: 7px; top: 3px; font-size: 9.5px;
+                 color: var(--fg4); }
+  .cwrap .cnow { position: absolute; right: 7px; top: 3px; font-size: 11px;
+                 font-weight: 700; color: var(--m); letter-spacing: -.02em; }
+  .cwrap .cnil { position: absolute; inset: 0; display: flex; align-items: center;
+                 justify-content: center; font-size: 10.5px; color: var(--fg4); }
+  .ctime { display: flex; justify-content: space-between; font-size: 9.5px;
+           color: var(--fg4); margin-top: 3px; }
+
+  .sbox { background: var(--bg0h); border: 1px solid var(--bg2);
+          border-radius: var(--radius); box-shadow: var(--shadow); padding: 11px; }
+  /* The summary chart is the one people read values off, so give it room. */
+  #st-all .chart { height: 96px; }
+  .sbox > h3 { margin: 0 0 2px; font-size: 13.5px; color: var(--fg0); font-weight: 700; }
+  .sbox > h3 span { font-weight: 400; font-size: 10.5px; color: var(--fg4);
+                    margin-left: 6px; }
+  .snums { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 7px; }
+  .snums div { flex: 1 1 0; min-width: 62px; background: var(--bg1); border-radius: 6px;
+               padding: 5px 7px; }
+  .snums b { display: block; font-size: 13px; color: var(--fg0); font-weight: 700;
+             letter-spacing: -.02em; }
+  .snums i { font-style: normal; font-size: 9.5px; color: var(--fg4); }
+
+  .shead { font-size: 11px; font-weight: 700; color: var(--fg4); letter-spacing: .04em;
+           margin: 16px 0 7px; text-transform: uppercase; }
+  .sgridr { display: grid; gap: 10px; grid-template-columns: 1fr; align-items: start; }
+  @media (min-width: 700px)  { .sgridr { grid-template-columns: repeat(2, 1fr); } }
+  @media (min-width: 1040px) { .sgridr { grid-template-columns: repeat(4, 1fr); } }
+  /* Laid out by the same columnize() as the server grid. */
+
+  .legend { display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+            margin: 12px 2px 0; font-size: 10.5px; color: var(--fg4); }
+  .lgi { display: flex; align-items: center; gap: 4px; }
+  .lgs { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; }
+
+  .hide { display: none !important; }
+  .empty { text-align: center; padding: 44px 20px; color: var(--fg4); }
+  .spin { width: 20px; height: 20px; margin: 0 auto 11px; border-radius: 50%;
+          border: 2px solid var(--bg2); border-top-color: var(--blue);
+          animation: sp .8s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  footer { margin-top: 18px; text-align: center; font-size: 10.5px; color: var(--fg4); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="hrow">
+      <h1>HIL GPU <span id="hcount"></span></h1>
+      <div class="meta"><span class="dot" id="dot"></span><span id="hts">연결 중…</span></div>
+      <button class="tgl" id="theme" type="button" title="테마 전환"
+              aria-label="밝은/어두운 테마 전환"></button>
+    </div>
+    <div class="stats">
+      <div class="stat free"><b id="s-free">–</b><i>여유 GPU</i></div>
+      <div class="stat busy"><b id="s-busy">–</b><i>사용 중</i></div>
+      <div class="stat"><b id="s-tot">–</b><i>전체 GPU</i></div>
+      <div class="stat"><b id="s-srv">–</b><i>서버</i></div>
+    </div>
+    <!-- One-touch jump: tap a server to bring its card into view, no scrolling. -->
+    <div class="jump" id="jump" aria-label="서버로 이동"></div>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="srv" aria-selected="true">서버</button>
+      <button class="tab" role="tab" data-tab="loc" aria-selected="false">위치</button>
+      <button class="tab" role="tab" data-tab="stat" aria-selected="false">통계</button>
+      <button class="tab alert hide" role="tab" data-tab="down" aria-selected="false"
+              id="tab-down"></button>
+    </div>
+  </header>
+
+  <div id="banner" class="banner hide"></div>
+  <noscript><div class="empty">이 대시보드는 JavaScript가 필요합니다.</div></noscript>
+  <div id="boot" class="empty"><div class="spin"></div>서버 상태를 수집하고 있습니다…</div>
+
+  <div id="view-srv">
+    <div class="grid hide" id="grid"></div>
+    <div class="empty hide" id="none">조건에 맞는 서버가 없습니다.</div>
+  </div>
+
+  <div id="view-loc" class="hide">
+    <div class="rooms" id="rooms"></div>
+    <div class="legend">
+      <span>숫자 = 전력(W) · 색 = 전력제한 대비</span>
+      <span class="lgi"><i class="lgs" style="background:#d5c4a1"></i>~15%</span>
+      <span class="lgi"><i class="lgs" style="background:#98971a"></i>15–34%</span>
+      <span class="lgi"><i class="lgs" style="background:#d79921"></i>35–59%</span>
+      <span class="lgi"><i class="lgs" style="background:#d65d0e"></i>60–84%</span>
+      <span class="lgi"><i class="lgs" style="background:#cc241d"></i>85%+</span>
+      <span class="lgi"><i class="lgs" style="background:#bdae93"></i>미모니터링 / 응답없음</span>
+    </div>
+  </div>
+
+  <div id="view-stat" class="hide">
+    <div class="segs" id="st-range" role="group" aria-label="기간">
+      <button class="seg" data-r="6h" aria-pressed="true">6시간</button>
+      <button class="seg" data-r="24h" aria-pressed="false">24시간</button>
+      <button class="seg" data-r="7d" aria-pressed="false">7일</button>
+      <button class="seg" data-r="all" aria-pressed="false">전체</button>
+    </div>
+    <div class="segs" id="st-metric" role="group" aria-label="지표">
+      <button class="seg" data-m="w" aria-pressed="true">전력</button>
+      <button class="seg" data-m="u" aria-pressed="false">사용률</button>
+      <button class="seg" data-m="t" aria-pressed="false">온도</button>
+      <button class="seg" data-m="b" aria-pressed="false">사용 중 GPU</button>
+    </div>
+
+    <div id="st-body" class="hide">
+      <div class="sbox" id="st-all"></div>
+      <div class="shead">위치별</div>
+      <div class="sgridr" id="st-racks"></div>
+      <div class="shead">서버별</div>
+      <div class="sgrids" id="st-srvs"></div>
+    </div>
+    <div class="empty" id="st-boot"><div class="spin"></div>통계를 불러오는 중…</div>
+  </div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+"use strict";
+/* Incremental renderer: DOM for each server card and rack unit is built once
+   and cached, then every tick writes only the values that changed. Rebuilding
+   ~100 GPU rows through innerHTML at 1 Hz janks on phones and restarts CSS
+   transitions, so nothing here touches innerHTML after first paint, and bars
+   animate with transform (compositor-only) rather than width. */
+
+var TAB = "srv";
+var REFRESH_MS = 1000;            // fixed 1 Hz screen refresh
+var LAST = null, TIMER = null, INFLIGHT = false;
+var CARDS = new Map(), UNITS = new Map(), ROOMS_BUILT = false;
+
+/* Pinned servers, newest-pinned last. Per viewer, not per snapshot: everyone
+   gets identical published bytes, and a pin is one person's reading order. */
+var PINS = new Set(), ORDER_SIG = "";
+try {
+  (localStorage.getItem("hilgpu.pins") || "").split(",").forEach(function (n) {
+    if (n) PINS.add(n);
+  });
+} catch (e) {}
+
+function savePins() {
+  try {
+    localStorage.setItem("hilgpu.pins", Array.from(PINS).join(","));
+  } catch (e) {}
+}
+
+function togglePin(name) {
+  if (PINS.has(name)) PINS.delete(name); else PINS.add(name);
+  savePins();
+  var c = CARDS.get(name);
+  if (c) {
+    c.root.classList.toggle("pinned", PINS.has(name));
+    c.pin.setAttribute("aria-pressed", String(PINS.has(name)));
+    c.pin.title = PINS.has(name) ? "상단 고정 해제" : "상단에 고정";
+  }
+  render();
+}
+
+/* Lay out the visible cards: pinned first, then server order, filled across.
+   Only touches the DOM when the result would actually differ -- reshuffling the
+   columns every second would make the page flicker. */
+function layoutCards(visible) {
+  var want = visible.slice().sort(function (a, b) {
+    return (PINS.has(a.name) ? 0 : 1) - (PINS.has(b.name) ? 0 : 1);
+  });
+  var n = gridCols();
+  var sig = n + "|" + want.map(function (s) { return s.name; }).join(",");
+  if (sig === ORDER_SIG) return;
+  ORDER_SIG = sig;
+  columnize($("grid"), want.map(function (s) { return CARDS.get(s.name).root; }), n);
+}
+var $ = function (id) { return document.getElementById(id); };
+
+function pct(v) { return v > 100 ? 100 : v > 0 ? v : 0; }
+function gb(mb) { return mb == null ? "–" : (mb / 1024).toFixed(mb < 10240 ? 1 : 0); }
+function dur(s) {
+  if (!s) return "";
+  var d = Math.floor(s / 86400); if (d) return d + "d";
+  var h = Math.floor(s / 3600);  if (h) return h + "h";
+  return Math.max(1, Math.floor(s / 60)) + "m";
+}
+function fmtAge(s) {
+  if (s < 60) return s + "초";
+  if (s < 3600) return Math.floor(s / 60) + "분";
+  if (s < 86400) return Math.floor(s / 3600) + "시간";
+  return Math.floor(s / 86400) + "일";
+}
+function isBusy(g) { return (g.util || 0) >= 5 || (g.mem_used || 0) > 512; }
+
+/* Rack cell colour comes from the same utilisation number the bars use, so the
+   two views can never disagree. */
+function cellLevel(g) {
+  /* Colour by how much of the card's power budget is actually being drawn.
+     The rack view shows watts, so colouring by utilisation would put a number
+     and a colour that disagree in the same cell. */
+  if (g.power == null || !g.power_limit) {
+    if (g.util == null) return "na";
+    return g.util >= 95 ? "max" : g.util >= 80 ? "hi"
+         : g.util >= 50 ? "mid" : g.util >= 1 ? "lo" : "idle";
+  }
+  var r = g.power / g.power_limit * 100;
+  if (r >= 85) return "max";
+  if (r >= 60) return "hi";
+  if (r >= 35) return "mid";
+  if (r >= 15) return "lo";
+  return "idle";
+}
+function cellText(g) {
+  if (g.power != null) return String(Math.round(g.power));
+  if (g.util != null) return Math.round(g.util) + "%";
+  return "–";
+}
+/* "NVIDIA GeForce RTX 4090" -> "RTX 4090", "NVIDIA TITAN RTX" -> "TITAN RTX" */
+function shortGpu(name) {
+  return String(name || "").replace(/^NVIDIA\s+/i, "")
+                           .replace(/^GeForce\s+/i, "")
+                           .replace(/\s+/g, " ").trim();
+}
+function setText(el, t) { if (el.__t !== t) { el.__t = t; el.textContent = t; } }
+function setAttr(el, k, v) { if (el.dataset[k] !== v) el.dataset[k] = v; }
+function setFill(el, ratio, colorVar) {
+  var r = pct(ratio) / 100;
+  if (el.__r !== r) { el.__r = r; el.style.transform = "scaleX(" + r.toFixed(4) + ")"; }
+  if (el.__c !== colorVar) { el.__c = colorVar; el.style.backgroundColor = "var(--" + colorVar + ")"; }
+}
+function el(tag, cls, parent) {
+  var n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function makeBar(parent, label) {
+  var row = el("div", "bar", parent);
+  el("span", "bl", row).textContent = label;
+  var fill = el("div", "fill", el("div", "track", row));
+  return { row: row, fill: fill, val: el("span", "val", row) };
+}
+
+/* ---------------- server cards ---------------- */
+function makeCard(s) {
+  var card = el("div", "card");
+  if (PINS.has(s.name)) card.classList.add("pinned");
+  var head = el("div", "chead", card);
+  el("span", "name", head).textContent = s.name;
+  el("span", "model", head).textContent =
+    s.gpu_model + " ×" + (s.n_gpu_expected || (s.gpus || []).length);
+  var pin = el("button", "pin", head);
+  pin.type = "button";
+  pin.setAttribute("aria-pressed", String(PINS.has(s.name)));
+  pin.title = PINS.has(s.name) ? "상단 고정 해제" : "상단에 고정";
+  pin.setAttribute("aria-label", s.name + " 상단 고정");
+  pin.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.6.6a1 1 0 0 0-1.5 1.3l.2.2-3 2.2-2.4-.3a1 1 0 0 0-.8 1.7l3 3-3.5 4.7a.5.5 0 0 0 .7.7L7 10.6l3 3a1 1 0 0 0 1.7-.8l-.3-2.4 2.2-3 .2.2a1 1 0 0 0 1.3-1.5z"/></svg>';
+  pin.addEventListener("click", function () { togglePin(s.name); });
+
+  var badge = el("span", "badge", head);
+
+  // Power sparkline sits directly under the header: the server's total draw
+  // over the recent window, which is the fastest read of "is this box working".
+  var sw = el("div", "sparkwrap", card);
+  var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "spark");
+  svg.setAttribute("preserveAspectRatio", "none");
+  var area = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  area.setAttribute("class", "ar");
+  var line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  line.setAttribute("class", "ln");
+  svg.appendChild(area); svg.appendChild(line);
+  sw.appendChild(svg);
+  var sparkPeak = el("i", null, sw);
+  var sparkNow = el("b", null, sw);
+
+  var sub = el("div", "sub", card);
+  var subSpans = [];
+  for (var i = 0; i < 5; i++) subSpans.push(el("span", null, sub));
+  var gwrap = el("div", "gpus", card);
+  var err = el("div", "err hide", card);
+
+  var rows = [];
+  (s.gpus || []).forEach(function (g) {
+    var row = el("div", "gpu", gwrap);
+    var gh = el("div", "ghead", row);
+    el("span", "gidx", gh).textContent = g.index;
+    var gname = el("span", "gname", gh);
+    var gvram = el("span", "gvram", gh);
+    var bars = el("div", "bars", row);
+    rows.push({
+      row: row, gname: gname, gvram: gvram,
+      util: makeBar(bars, "util"), mem: makeBar(bars, "mem"),
+      pwr: makeBar(bars, "pwr"), temp: makeBar(bars, "temp"),
+    });
+  });
+  return { root: card, badge: badge, pin: pin, sub: subSpans, gwrap: gwrap,
+           err: err, rows: rows,
+           sparkWrap: sw, sparkSvg: svg, sparkLine: line, sparkArea: area,
+           sparkNow: sparkNow, sparkPeak: sparkPeak };
+}
+
+function updateCard(c, s) {
+  var up = s.status === "ok", gpus = s.gpus || [], busy = 0;
+  for (var i = 0; i < gpus.length; i++) if (isBusy(gpus[i])) busy++;
+
+  c.root.classList.toggle("offline", !up);
+  var pending = s.status === "pending";
+  setAttr(c.badge, "s", pending ? "wait" : !up ? "down"
+    : (gpus.length && busy === gpus.length ? "busy" : "ok"));
+  setText(c.badge, !up
+    ? (pending ? "대기" : s.status === "timeout" ? "TIMEOUT"
+       : s.status === "nogpu" ? "NO GPU" : "DOWN")
+    : (gpus.length - busy) + " / " + gpus.length + " 여유");
+
+  var f = [];
+  if (s.loc) f.push(s.loc);
+  if (up) {
+    if (s.load1 != null && s.nproc) f.push("load " + s.load1.toFixed(1) + "/" + s.nproc);
+    if (s.ram_total_mb) f.push("RAM " + gb(s.ram_used_mb) + "/" + gb(s.ram_total_mb) + "G");
+    if (s.disk_total_kb) f.push("디스크 " + Math.round(s.disk_used_kb / s.disk_total_kb * 100) + "%");
+    if (s.uptime_sec) f.push("up " + dur(s.uptime_sec));
+  }
+  for (var k = 0; k < c.sub.length; k++) {
+    setText(c.sub[k], f[k] || "");
+    c.sub[k].classList.toggle("hide", !f[k]);
+  }
+
+  drawSpark(c, s);
+
+  c.gwrap.classList.toggle("hide", !up);
+  c.err.classList.toggle("hide", up);
+  if (!up) {
+    // "pending" means this host's turn in the round-robin has not come up
+    // yet -- reporting it as down would be wrong.
+    setText(c.err, pending ? "순서 대기 중 · 아직 수집 전"
+                           : "응답 없음 · " + (s.error || "unknown"));
+    return;
+  }
+
+  for (var j = 0; j < c.rows.length; j++) {
+    var r = c.rows[j], g = gpus[j];
+    if (!g) { r.row.classList.add("hide"); continue; }
+    r.row.classList.remove("hide");
+    setAttr(r.row, "on", isBusy(g) ? "1" : "0");
+
+    /* Per-GPU model straight from nvidia-smi. Mixed-card servers (hi1: K20 +
+       Titan V, hi3: M40 12G + M40 24G + GTX 750 Ti) are not described by the
+       server-level model alone. */
+    setText(r.gname, shortGpu(g.name));
+
+    var u = g.util || 0;
+    setFill(r.util.fill, u, u >= 90 ? "red-b" : u >= 50 ? "yellow-b" : "green-b");
+    setText(r.util.val, g.util == null ? "–" : Math.round(g.util) + " %");
+
+    var memR = g.mem_total ? g.mem_used / g.mem_total * 100 : 0;
+    setFill(r.mem.fill, memR, "blue-b");
+    setText(r.mem.val, gb(g.mem_used) + " / " + gb(g.mem_total) + " GB");
+
+    var hasP = g.power != null;
+    r.pwr.row.classList.toggle("hide", !hasP);
+    if (hasP) {
+      setFill(r.pwr.fill, g.power_limit ? g.power / g.power_limit * 100 : 0, "purple-b");
+      setText(r.pwr.val, Math.round(g.power) + " / "
+        + (g.power_limit != null ? Math.round(g.power_limit) : "–") + " W");
+    }
+    var hasT = g.temp != null;
+    r.temp.row.classList.toggle("hide", !hasT);
+    if (hasT) {
+      setFill(r.temp.fill, g.temp / 95 * 100,
+        g.temp >= 80 ? "red-b" : g.temp >= 65 ? "yellow-b" : "aqua-b");
+      setText(r.temp.val, Math.round(g.temp) + " °C"
+        + (g.fan != null ? " · fan " + Math.round(g.fan) + "%" : ""));
+    }
+
+    // Anonymous by design: how many jobs share the card, never whose they are.
+    var nj = (g.procs || []).length;
+    setText(r.gvram, (g.mem_total ? gb(g.mem_total) + " GB" : "")
+      + (nj > 1 ? " · " + nj + " jobs" : nj === 1 ? " · 1 job" : ""));
+  }
+}
+
+/* Redraw a server's power sparkline from watt_history.
+   The viewBox is the data's own coordinate space and preserveAspectRatio is
+   off, so the path stretches to whatever width the card has -- no need to know
+   the pixel size, and no redraw on resize. */
+function drawSeries(t, h) {
+  if (!h || h.length < 2) { t.wrap.classList.add("hide"); return; }
+  t.wrap.classList.remove("hide");
+
+  var key = h.length + ":" + h[h.length - 1] + ":" + h[0];
+  if (t.key === key) return;               // nothing changed since last paint
+  t.key = key;
+
+  var n = h.length, max = 0, i;
+  for (i = 0; i < n; i++) if (h[i] > max) max = h[i];
+  // A flat zero line still needs a sane scale, and headroom keeps the peak
+  // from touching the top edge.
+  var top = Math.max(max * 1.15, 50);
+  var W = n - 1, H = 100;
+  t.svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+  var d = "";
+  for (i = 0; i < n; i++) {
+    d += (i ? "L" : "M") + i + " " + (H - (h[i] / top) * H).toFixed(1);
+  }
+  t.line.setAttribute("d", d);
+  t.area.setAttribute("d", d + "L" + W + " " + H + "L0 " + H + "Z");
+  setText(t.now, Math.round(h[n - 1]) + " W");
+  setText(t.peak, "peak " + Math.round(max) + " W");
+}
+
+function drawSpark(c, s) {
+  drawSeries({ wrap: c.sparkWrap, svg: c.sparkSvg, line: c.sparkLine,
+               area: c.sparkArea, now: c.sparkNow, peak: c.sparkPeak,
+               key: c.sparkKey },
+             s.watt_history);
+  c.sparkKey = (s.watt_history || []).length + ":" +
+               ((s.watt_history || [])[(s.watt_history || []).length - 1]);
+}
+
+/* ---------------- location / rack view ---------------- */
+var ROOMS = [];
+
+function buildRooms(racks) {
+  var host = $("rooms");
+  host.textContent = "";
+  UNITS.clear();
+  ROOMS = [];
+  racks.forEach(function (rk) {
+    var room = el("div", "room", host);
+    var rh = el("div", "rhead", room);
+    el("b", null, rh).textContent = rk.room;
+    if (rk.note) el("i", null, rh).textContent = rk.note;
+
+    // Same sparkline as a server card, but summed over every server in the
+    // room -- that is the number that matters for a rack's power budget.
+    var sw = el("div", "sparkwrap", room);
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "spark");
+    svg.setAttribute("preserveAspectRatio", "none");
+    var area = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    area.setAttribute("class", "ar");
+    var line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    line.setAttribute("class", "ln");
+    svg.appendChild(area); svg.appendChild(line);
+    sw.appendChild(svg);
+    var rp = el("i", null, sw), rn = el("b", null, sw);
+    ROOMS.push({ slots: rk.slots || [], wrap: sw, svg: svg,
+                 line: line, area: area, now: rn, peak: rp });
+
+    var rack = el("div", "rack", room);
+    (rk.slots || []).forEach(function (slot) {
+      var unit = el("div", "unit", rack);
+      var uh = el("div", "uhead", unit);
+      el("span", "uname", uh).textContent = slot;
+      var umodel = el("span", "umodel", uh);
+      var ustat = el("span", "ustat", uh);
+      var cells = el("div", "cells", unit);
+      UNITS.set(slot, { root: unit, model: umodel, stat: ustat,
+                        cells: cells, built: null, cellEls: [] });
+    });
+  });
+  ROOMS_BUILT = true;
+}
+
+function buildCells(u, n, level) {
+  u.cells.textContent = "";
+  u.cellEls = [];
+  for (var i = 0; i < n; i++) {
+    var c = el("div", "cell", u.cells);
+    c.dataset.lv = level;
+    el("span", null, c);
+    u.cellEls.push(c);
+  }
+}
+
+/* Sum the per-server watt histories of a room into one series.
+   Servers are sampled independently, so their histories can differ in length;
+   aligning them from the END keeps the newest samples together, which is the
+   part anyone is actually looking at. */
+function drawRoomSparks(byName) {
+  ROOMS.forEach(function (r) {
+    var series = [];
+    r.slots.forEach(function (slot) {
+      var s = byName[slot];
+      if (s && s.watt_history && s.watt_history.length) series.push(s.watt_history);
+    });
+    if (!series.length) { r.wrap.classList.add("hide"); return; }
+    r.wrap.classList.remove("hide");
+
+    var n = Math.min.apply(null, series.map(function (h) { return h.length; }));
+    if (n < 2) { r.wrap.classList.add("hide"); return; }
+    var sum = [];
+    for (var i = 0; i < n; i++) {
+      var t = 0;
+      for (var j = 0; j < series.length; j++) t += series[j][series[j].length - n + i];
+      sum.push(t);
+    }
+    drawSeries(r, sum);
+  });
+}
+
+function updateRooms(byName) {
+  UNITS.forEach(function (u, slot) {
+    var s = byName[slot];
+
+    if (!s) {
+      // Documented in the rack but not polled: the NAS, or retired hardware.
+      u.root.classList.add("vacant");
+      u.root.classList.remove("offline");
+      setText(u.model, "");
+      setText(u.stat, /폐/.test(slot) ? "폐기" : "미모니터링");
+      if (u.built !== "none") { u.built = "none"; buildCells(u, 0, "na"); }
+      return;
+    }
+
+    u.root.classList.remove("vacant");
+    var up = s.status === "ok", gpus = s.gpus || [];
+    u.root.classList.toggle("offline", !up);
+    setText(u.model, s.gpu_model);
+
+    if (!up) {
+      setText(u.stat, s.status === "pending" ? "대기"
+        : s.status === "timeout" ? "TIMEOUT" : "DOWN");
+      var n = s.n_gpu_expected || 0;
+      if (u.built !== "down" + n) { u.built = "down" + n; buildCells(u, n, "na"); }
+      u.cellEls.forEach(function (c) { setAttr(c, "lv", "na"); setText(c.firstChild, "–"); });
+      return;
+    }
+
+    var busy = gpus.filter(isBusy).length;
+    setText(u.stat, (gpus.length - busy) + "/" + gpus.length + " 여유");
+    if (u.built !== "up" + gpus.length) {
+      u.built = "up" + gpus.length;
+      buildCells(u, gpus.length, "idle");
+    }
+    gpus.forEach(function (g, i) {
+      var c = u.cellEls[i];
+      if (!c) return;
+      setAttr(c, "lv", cellLevel(g));
+      setText(c.firstChild, cellText(g));
+      var t = "GPU " + g.index + " · " + shortGpu(g.name) + " · "
+            + (g.power == null ? "– W" : Math.round(g.power) + " / "
+               + Math.round(g.power_limit || 0) + " W") + " · util "
+            + (g.util == null ? "–" : Math.round(g.util) + "%") + " · "
+            + gb(g.mem_used) + "/" + gb(g.mem_total) + " GB";
+      if (c.title !== t) c.title = t;
+    });
+  });
+}
+
+/* How many columns the card grids get. Kept in JS rather than CSS because
+   columnize() has to know the number to fill them across. */
+function gridCols() {
+  var w = window.innerWidth;
+  return w >= 1360 ? 4 : w >= 1040 ? 3 : w >= 700 ? 2 : 1;
+}
+
+/* Distribute `nodes` across `n` real columns inside `host`, card i to column
+   i % n, so the order reads left-to-right along each row.
+
+   Only the caller's signature check decides when this runs: moving every card
+   once a second would make the page flicker and fight the incremental update. */
+function columnize(host, nodes, n) {
+  var cols = host.__cols;
+  if (!cols || cols.length !== n) {
+    host.textContent = "";
+    cols = [];
+    for (var i = 0; i < n; i++) cols.push(el("div", "gcol", host));
+    host.__cols = cols;
+  }
+  nodes.forEach(function (node, i) {
+    cols[i % n].appendChild(node);   // appendChild moves a node it already holds
+  });
+}
+
+/* ---------------- one-touch jump bar ---------------- */
+var JUMP = new Map();
+
+function updateJump(servers) {
+  var host = $("jump");
+  servers.forEach(function (s) {
+    var j = JUMP.get(s.name);
+    if (!j) {
+      var b = el("button", "jb", host);
+      b.type = "button";
+      b.dataset.go = s.name;
+      j = { root: b, name: el("b", null, b), sub: el("i", null, b) };
+      setText(j.name, s.name);
+      JUMP.set(s.name, j);
+    }
+    var up = s.status === "ok", gpus = s.gpus || [];
+    var free = up ? gpus.filter(function (g) { return !isBusy(g); }).length : 0;
+    setAttr(j.root, "a", s.status === "pending" ? "wait" : !up ? "down"
+      : free > 0 ? "free" : "full");
+    setText(j.sub, !up ? (s.status === "pending" ? "·" : "—")
+      : free + "/" + gpus.length);
+    var t = s.name + (up ? " · " + free + "/" + gpus.length + " 여유" : " · 응답 없음");
+    if (j.root.title !== t) j.root.title = t;
+  });
+}
+
+function jumpTo(name) {
+  // In the statistics view the jump bar targets that view's own cards, so the
+  // tab does not change under the reader.
+  if (TAB === "stat") {
+    var box = document.getElementById("st-card-" + name);
+    if (!box) return;
+    box.scrollIntoView({ behavior: "smooth", block: "start" });
+    box.classList.remove("flash");
+    void box.offsetWidth;               // restart the animation
+    box.classList.add("flash");
+    return;
+  }
+  // The cards only exist in the server view, so switch there first.
+  if (TAB !== "srv") setTab("srv");
+  if (TAB === "down") setTab("srv");
+  var c = CARDS.get(name);
+  if (!c) return;
+  c.root.scrollIntoView({ behavior: "smooth", block: "start" });
+  c.root.classList.remove("flash");
+  void c.root.offsetWidth;              // restart the animation
+  c.root.classList.add("flash");
+}
+
+$("jump").addEventListener("click", function (ev) {
+  var b = ev.target.closest("button[data-go]");
+  if (b) jumpTo(b.dataset.go);
+});
+
+/* ---------------- shared ---------------- */
+function render() {
+  var d = LAST;
+  if (!d) return;
+  var sm = d.summary || {}, servers = d.servers || [];
+
+  /* Until the collector finishes its first pass the snapshot is empty with
+     generated_at = 0. Treating that as a real timestamp makes the age read
+     "20705 days ago" and replaces the loading state with a stale-data
+     warning, so hold the spinner until actual data arrives. */
+  if (!d.generated_at) {
+    $("boot").classList.remove("hide");
+    $("banner").classList.add("hide");
+    $("grid").classList.add("hide");
+    $("none").classList.add("hide");
+    setText($("hts"), "수집 중…");
+    $("dot").className = "dot warn";
+    return;
+  }
+
+  setText($("s-free"), sm.gpus_free == null ? "–" : String(sm.gpus_free));
+  setText($("s-busy"), sm.gpus_busy == null ? "–" : String(sm.gpus_busy));
+  setText($("s-tot"), String(sm.gpus_total || 0));
+  setText($("s-srv"), (sm.servers_up || 0) + " / " + (sm.servers_total || 0));
+  setText($("hcount"), "· " + (sm.servers_total || 0) + "대");
+
+  var iv = d.poll_interval_sec || 30;
+  var age = Math.max(0, Math.floor(Date.now() / 1000) - (d.generated_at || 0));
+  /* The site is static and stays up even when the collector does not, so an
+     old snapshot must be called out rather than shown as if it were live. */
+  var stale = age > Math.max(60, iv * 6);
+  $("dot").className = "dot" + (stale ? " err" : age > iv * 3 + 5 ? " warn" : "");
+  // Just the age. "1회전 Ns" described a polling sweep that no longer exists --
+  // with persistent streams every server updates every second, so a sweep
+  // duration is not a thing the viewer can act on.
+  setText($("hts"), d.generated_at
+    ? (age <= 2 ? "실시간" : age < 60 ? age + "초 전" : fmtAge(age) + " 전")
+    : "수집 중…");
+  $("banner").classList.toggle("hide", !stale);
+  if (stale) {
+    setText($("banner"), "아래 수치는 " + fmtAge(age)
+      + " 전 값입니다. 수집기가 멈췄거나 데스크톱이 꺼져 있을 수 있습니다.");
+  }
+
+  $("boot").classList.add("hide");
+  updateJump(servers);
+
+  // The down tab only exists while something is actually down.
+  // pending is "not yet polled", not a fault.
+  var nDown = servers.filter(function (s) {
+    return s.status !== "ok" && s.status !== "pending";
+  }).length;
+  var dtab = $("tab-down");
+  setText(dtab, "응답없음 " + nDown);
+  dtab.classList.toggle("hide", nDown === 0);
+  if (nDown === 0 && TAB === "down") { setTab("srv"); return; }
+
+  if (TAB === "srv" || TAB === "down") {
+    var grid = $("grid"), visible = [];
+    servers.forEach(function (s) {
+      var c = CARDS.get(s.name);
+      if (!c) { c = makeCard(s); CARDS.set(s.name, c); }
+      var vis = TAB === "srv" || (s.status !== "ok" && s.status !== "pending");
+      c.root.classList.toggle("hide", !vis);
+      if (vis) { visible.push(s); updateCard(c, s); }
+    });
+    // A hidden card still occupies a column slot, so lay out only what is
+    // shown; otherwise 응답없음 would be mostly empty columns.
+    layoutCards(visible);
+    grid.classList.toggle("hide", visible.length === 0);
+    $("none").classList.toggle("hide", visible.length !== 0);
+  } else {
+    if (!ROOMS_BUILT) buildRooms(d.racks || []);
+    var byName = {};
+    servers.forEach(function (s) { byName[s.name] = s; });
+    updateRooms(byName);
+    drawRoomSparks(byName);
+  }
+
+}
+
+function poll() {
+  if (INFLIGHT) return;                 // never queue behind a slow fetch
+  INFLIGHT = true;
+  /* cache:"no-cache" = always revalidate. The browser attaches If-None-Match
+     itself and turns a 304 back into a 200 from cache, so we get the bandwidth
+     saving without hand-rolling ETag headers -- which iOS Safari is entitled
+     to drop when combined with cache:"no-store". */
+  fetch("status.json", { cache: "no-cache", credentials: "same-origin" })
+    .then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(function (j) { INFLIGHT = false; LAST = j; render(); })
+    .catch(function (e) {
+      INFLIGHT = false;
+      $("dot").className = "dot err";
+      setText($("hts"), "수집기 연결 실패");
+      if (!LAST) {
+        $("boot").classList.remove("hide");
+        setText($("boot"), "상태 파일을 불러올 수 없습니다 (" + e.message + ")");
+      }
+    });
+}
+
+function startTimer() {
+  clearInterval(TIMER);
+  TIMER = setInterval(poll, REFRESH_MS);
+  clearInterval(ST_TIMER);
+  // stats.json is republished once a minute; polling it faster is pure waste.
+  ST_TIMER = setInterval(function () { if (TAB === "stat") loadStats(true); }, 60000);
+}
+var ST_TIMER = 0;
+
+/* ---------------- theme ---------------- */
+function setTheme(t, persist) {
+  var dark = t === "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  var btn = $("theme");
+  // Show the mode you would switch TO, which is the usual convention.
+  btn.textContent = dark ? "☀" : "☾";
+  btn.setAttribute("aria-pressed", String(dark));
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", dark ? "#282828" : "#fbf1c7");
+  if (persist) { try { localStorage.setItem("hilgpu.theme", dark ? "dark" : "light"); } catch (e) {} }
+}
+$("theme").addEventListener("click", function () {
+  setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true);
+});
+
+/* ---------------- statistics view ----------------
+   Fed by stats.json, which the collector republishes once a minute from its
+   on-disk time-series store. It is an order of magnitude larger than
+   status.json, so it is fetched only while this tab is open -- everyone else
+   never pays for it. */
+var ST = null, ST_AT = 0, ST_BUSY = false, ST_RANGE = "6h", ST_METRIC = "w";
+var ST_NODES = { racks: new Map(), srvs: new Map() };
+
+var METRICS = {
+  w: { label: "전력",       unit: " W",  color: "var(--purple)", agg: "sum", floor: 50  },
+  u: { label: "사용률",     unit: "%",   color: "var(--green)",  agg: "wavg", floor: 100, cap: 100 },
+  t: { label: "최고 온도",  unit: " °C", color: "var(--orange)", agg: "max", floor: 60  },
+  b: { label: "사용 중 GPU", unit: "",   color: "var(--blue)",   agg: "sum", floor: 4   }
+};
+var RANGE_LABEL = { "6h": "6시간 전", "24h": "24시간 전", "7d": "7일 전" };
+
+/* The all-time range starts wherever the database does, so its axis label is a
+   date rather than a fixed phrase. */
+function rangeStart(key, R) {
+  if (RANGE_LABEL[key]) return RANGE_LABEL[key];
+  var d = new Date(R.from * 1000);
+  return (d.getMonth() + 1) + "월 " + d.getDate() + "일부터";
+}
+
+/* Build one chart into `host`, returning handles for later redraws. */
+function makeChart(host) {
+  var wrap = el("div", "cwrap", host);
+  var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "chart");
+  svg.setAttribute("preserveAspectRatio", "none");
+  var area = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  area.setAttribute("class", "ar");
+  var line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  line.setAttribute("class", "ln");
+  var avg = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  avg.setAttribute("class", "avg");
+  svg.appendChild(area); svg.appendChild(avg); svg.appendChild(line);
+  wrap.appendChild(svg);
+  var cmax = el("i", "cmax", wrap), cnow = el("b", "cnow", wrap),
+      cnil = el("div", "cnil", wrap);
+  var t = el("div", "ctime", host);
+  var t0 = el("span", null, t), t1 = el("span", null, t);
+  t1.textContent = "지금";
+  return { svg: svg, line: line, area: area, avg: avg, max: cmax, now: cnow,
+           nil: cnil, t0: t0 };
+}
+
+/* Draw a series of numbers, where null means "no data for that slot".
+   Gaps break the line rather than being drawn through: a server that was off
+   for an hour did not slowly ramp back up. */
+function drawChart(c, vals, m) {
+  var i, n = vals.length, seen = 0, peak = 0, sum = 0;
+  for (i = 0; i < n; i++) {
+    if (vals[i] == null) continue;
+    seen++; sum += vals[i];
+    if (vals[i] > peak) peak = vals[i];
+  }
+  c.nil.classList.toggle("hide", seen > 0);
+  if (!seen) {
+    c.line.setAttribute("d", ""); c.area.setAttribute("d", "");
+    c.avg.setAttribute("d", "");
+    setText(c.nil, "기록 없음");
+    setText(c.now, ""); setText(c.max, "");
+    return { seen: 0, peak: 0, mean: 0 };
+  }
+  var mean = sum / seen, lastY = 0;
+  var top = m.cap ? m.cap : Math.max(peak * 1.15, m.floor);
+  var W = Math.max(n - 1, 1), H = 100;
+  c.svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+  var d = "", a = "", run = 0, start = 0;
+  for (i = 0; i < n; i++) {
+    if (vals[i] == null) {
+      // A run of one would be an empty path; repeat the point so the round
+      // cap draws it as a dot instead of nothing.
+      if (run === 1) d += "L" + start + " " + lastY;
+      if (run) { a += "L" + (i - 1) + " " + H + "Z"; run = 0; }
+      continue;
+    }
+    var y = (H - (vals[i] / top) * H).toFixed(1);
+    if (!run) { d += "M" + i + " " + y; a += "M" + i + " " + H + "L" + i + " " + y;
+                start = i; }
+    else { d += "L" + i + " " + y; a += "L" + i + " " + y; }
+    run++; lastY = y;
+  }
+  if (run === 1) d += "L" + start + " " + lastY;
+  if (run) a += "L" + (n - 1) + " " + H + "Z";
+  c.line.setAttribute("d", d);
+  c.area.setAttribute("d", a);
+  var ay = (H - (mean / top) * H).toFixed(1);
+  c.avg.setAttribute("d", "M0 " + ay + "L" + W + " " + ay);
+
+  // Last slot with data, not the last slot: the newest bucket is often
+  // still filling and would read low.
+  var last = 0;
+  for (i = n - 1; i >= 0; i--) if (vals[i] != null) { last = vals[i]; break; }
+  setText(c.max, "최대 " + fmtV(peak, m));
+  setText(c.now, fmtV(last, m));
+  return { seen: seen, peak: peak, mean: mean };
+}
+
+function fmtV(v, m) {
+  return (m.unit === "%" || m.unit === "" ? Math.round(v * 10) / 10 : Math.round(v)) + m.unit;
+}
+
+/* Combine several servers' slot arrays into one, honouring the metric:
+   power and busy counts add up, utilisation is weighted by GPU count (a
+   4-GPU box must not outvote an 8-GPU one), temperature takes the worst. */
+function combine(names, data, key, agg) {
+  if (!names.length) return null;
+  var n = 0, i, j;
+  for (i = 0; i < names.length; i++) {
+    var d0 = data[names[i]];
+    if (d0) { n = d0[key].length; break; }
+  }
+  if (!n) return null;
+  var out = new Array(n);
+  for (i = 0; i < n; i++) {
+    var acc = 0, wsum = 0, any = false;
+    for (j = 0; j < names.length; j++) {
+      var d = data[names[j]];
+      if (!d || !d.g[i]) continue;          // g === 0 marks a slot with no data
+      any = true;
+      var v = d[key][i];
+      if (agg === "max") acc = Math.max(acc, v);
+      else if (agg === "wavg") { acc += v * d.g[i]; wsum += d.g[i]; }
+      else acc += v;
+    }
+    out[i] = !any ? null : agg === "wavg" ? (wsum ? acc / wsum : 0) : acc;
+  }
+  return out;
+}
+
+function gpuSlots(names, data) {
+  // Mean cards reporting per slot -- the denominator for "가동률".
+  var n = 0, i, j;
+  for (i = 0; i < names.length; i++) if (data[names[i]]) { n = data[names[i]].g.length; break; }
+  var out = new Array(n);
+  for (i = 0; i < n; i++) {
+    var t = 0;
+    for (j = 0; j < names.length; j++) {
+      var d = data[names[j]];
+      if (d) t += d.g[i];
+    }
+    out[i] = t;
+  }
+  return out;
+}
+
+function statNums(host, names, R, m) {
+  var data = R.data;
+  var w = combine(names, data, "w", "sum");
+  var busy = combine(names, data, "b", "sum");
+  var g = gpuSlots(names, data);
+  var i, wsum = 0, wn = 0, wmax = 0, bs = 0, gs = 0;
+  for (i = 0; i < (w ? w.length : 0); i++) {
+    if (w[i] == null) continue;
+    wn++; wsum += w[i]; if (w[i] > wmax) wmax = w[i];
+    if (busy[i] != null) { bs += busy[i]; gs += g[i]; }
+  }
+  var mean = wn ? wsum / wn : 0;
+  // Energy over the window: mean draw times the time actually covered.
+  var kwh = mean * (wn * R.step) / 3600 / 1000;
+  host.textContent = "";
+  function num(v, l) {
+    var d = el("div", null, host);
+    el("b", null, d).textContent = v;
+    el("i", null, d).textContent = l;
+  }
+  num(Math.round(mean) + " W", "평균 전력");
+  num(Math.round(wmax) + " W", "최대 전력");
+  num((kwh >= 100 ? Math.round(kwh) : Math.round(kwh * 10) / 10) + " kWh", "사용 전력량");
+  num(gs ? Math.round(bs / gs * 100) + "%" : "–", "GPU 가동률");
+}
+
+function buildStats(j) {
+  var host = $("st-racks"), i;
+  host.textContent = "";
+  ST_NODES.racks.clear();
+  (LAST && LAST.racks ? LAST.racks : []).forEach(function (rk) {
+    var names = (rk.slots || []).filter(function (n) { return !!j.byName[n]; });
+    if (!names.length) return;
+    var box = el("div", "sbox", host);
+    var h = el("h3", null, box);
+    h.textContent = rk.room;
+    el("span", null, h).textContent = names.length + "대";
+    var c = makeChart(box);
+    var nums = el("div", "snums", box);
+    ST_NODES.racks.set(rk.room, { names: names, chart: c, nums: nums });
+  });
+
+  host = $("st-srvs");
+  host.textContent = "";
+  host.__cols = null;
+  ST_NODES.srvs.clear();
+  var boxes = [];
+  j.servers.forEach(function (s) {
+    var box = el("div", "sbox");
+    boxes.push(box);
+    box.id = "st-card-" + s.name;
+    var h = el("h3", null, box);
+    h.textContent = s.name;
+    el("span", null, h).textContent = s.gpu + (s.loc ? " · " + s.loc : "");
+    var c = makeChart(box);
+    var nums = el("div", "snums", box);
+    ST_NODES.srvs.set(s.name, { names: [s.name], chart: c, nums: nums });
+  });
+  columnize(host, boxes, gridCols());
+}
+
+function renderStats() {
+  if (!ST) return;
+  var R = ST.ranges[ST_RANGE];
+  if (!R) { ST_RANGE = "6h"; R = ST.ranges[ST_RANGE]; }
+  if (!R) return;
+  var m = METRICS[ST_METRIC], key = ST_METRIC === "t" ? "t" : ST_METRIC;
+  var t0 = rangeStart(ST_RANGE, R);
+
+  var all = ST.servers.map(function (s) { return s.name; });
+  var box = $("st-all");
+  if (!box.dataset.built) {
+    box.dataset.built = "1";
+    box.textContent = "";
+    var h = el("h3", null, box);
+    h.textContent = "전체";
+    el("span", null, h).id = "st-all-sub";
+    box.__chart = makeChart(box);
+    box.__nums = el("div", "snums", box);
+  }
+  setText($("st-all-sub"), all.length + "대 · " + m.label);
+  box.__chart.svg.style.setProperty("--m", m.color);
+  box.__chart.now.style.color = m.color;
+  setText(box.__chart.t0, t0);
+  drawChart(box.__chart, combine(all, R.data, key, m.agg), m);
+  statNums(box.__nums, all, R, m);
+
+  ST_NODES.racks.forEach(function (n) {
+    n.chart.svg.style.setProperty("--m", m.color);
+    n.chart.now.style.color = m.color;
+    setText(n.chart.t0, t0);
+    drawChart(n.chart, combine(n.names, R.data, key, m.agg), m);
+    statNums(n.nums, n.names, R, m);
+  });
+  ST_NODES.srvs.forEach(function (n) {
+    n.chart.svg.style.setProperty("--m", m.color);
+    n.chart.now.style.color = m.color;
+    setText(n.chart.t0, t0);
+    // A single server never needs weighting -- its own mean is the answer.
+    drawChart(n.chart, combine(n.names, R.data, key,
+                               m.agg === "wavg" ? "max" : m.agg), m);
+    statNums(n.nums, n.names, R, m);
+  });
+}
+
+function loadStats(force) {
+  if (ST_BUSY) return;
+  var now = Date.now();
+  if (!force && ST && now - ST_AT < 55000) { renderStats(); return; }
+  ST_BUSY = true;
+  fetch("stats.json", { cache: "no-cache", credentials: "same-origin" })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(function (j) {
+      ST_BUSY = false; ST_AT = Date.now();
+      j.byName = {};
+      j.servers.forEach(function (s) { j.byName[s.name] = s; });
+      ST = j;
+      buildStats(j);
+      $("st-boot").classList.add("hide");
+      $("st-body").classList.remove("hide");
+      renderStats();
+    })
+    .catch(function (e) {
+      ST_BUSY = false;
+      if (!ST) setText($("st-boot"), "통계를 불러올 수 없습니다 (" + e.message + ")");
+    });
+}
+
+$("st-range").addEventListener("click", function (ev) {
+  var b = ev.target.closest("button[data-r]");
+  if (!b) return;
+  ST_RANGE = b.dataset.r;
+  [].forEach.call(this.querySelectorAll(".seg"), function (x) {
+    x.setAttribute("aria-pressed", String(x.dataset.r === ST_RANGE));
+  });
+  try { localStorage.setItem("hilgpu.strange", ST_RANGE); } catch (e) {}
+  renderStats();
+});
+$("st-metric").addEventListener("click", function (ev) {
+  var b = ev.target.closest("button[data-m]");
+  if (!b) return;
+  ST_METRIC = b.dataset.m;
+  [].forEach.call(this.querySelectorAll(".seg"), function (x) {
+    x.setAttribute("aria-pressed", String(x.dataset.m === ST_METRIC));
+  });
+  try { localStorage.setItem("hilgpu.smetric", ST_METRIC); } catch (e) {}
+  renderStats();
+});
+
+function setTab(t) {
+  TAB = t;
+  [].forEach.call(document.querySelectorAll(".tab"), function (b) {
+    b.setAttribute("aria-selected", String(b.dataset.tab === t));
+  });
+  $("view-srv").classList.toggle("hide", t === "loc" || t === "stat");
+  $("view-loc").classList.toggle("hide", t !== "loc");
+  $("view-stat").classList.toggle("hide", t !== "stat");
+  try { localStorage.setItem("hilgpu.tab", t); } catch (e) {}
+  if (t === "stat") loadStats(false);
+  render();
+}
+
+document.querySelector(".tabs").addEventListener("click", function (ev) {
+  var b = ev.target.closest("button[data-tab]");
+  if (b) setTab(b.dataset.tab);
+});
+
+// Restore the viewer's saved preferences.
+var savedTab = "srv", savedTheme = "dark";
+try {
+  // never restore into "down": that tab only exists while something is down
+  savedTab = { loc: "loc", stat: "stat" }[localStorage.getItem("hilgpu.tab")] || "srv";
+  ST_RANGE = { "6h": 1, "24h": 1, "7d": 1, all: 1 }[localStorage.getItem("hilgpu.strange")]
+              ? localStorage.getItem("hilgpu.strange") : "6h";
+  ST_METRIC = METRICS[localStorage.getItem("hilgpu.smetric")] ? localStorage.getItem("hilgpu.smetric") : "w";
+  // Dark is the default; only an explicit saved "light" overrides it.
+  savedTheme = localStorage.getItem("hilgpu.theme") === "light" ? "light" : "dark";
+} catch (e) {}
+setTheme(savedTheme, false);
+[].forEach.call(document.querySelectorAll("#st-range .seg"), function (x) {
+  x.setAttribute("aria-pressed", String(x.dataset.r === ST_RANGE));
+});
+[].forEach.call(document.querySelectorAll("#st-metric .seg"), function (x) {
+  x.setAttribute("aria-pressed", String(x.dataset.m === ST_METRIC));
+});
+setTab(savedTab);
+startTimer();
+
+/* The column count is a JS decision, so a resize past a breakpoint has to be
+   re-laid out by hand. Debounced: a drag fires this continuously. */
+var RESIZE_T = 0;
+window.addEventListener("resize", function () {
+  clearTimeout(RESIZE_T);
+  RESIZE_T = setTimeout(function () {
+    if (ST && $("st-srvs").__cols &&
+        $("st-srvs").__cols.length !== gridCols()) {
+      buildStats(ST);
+      renderStats();
+    }
+    render();
+  }, 150);
+});
+
+document.addEventListener("visibilitychange", function () {
+  if (document.hidden) { clearInterval(TIMER); clearInterval(ST_TIMER); }
+  else { poll(); startTimer(); }        // no background battery drain
+});
+poll();
+</script>
+</body>
+</html>
