@@ -1,15 +1,22 @@
 {
+  "id": "/",
   "name": "HIL GPU Monitor",
   "short_name": "HIL GPU",
-  "start_url": ".",
-  "scope": ".",
+
+  "_comment": "Every path here is absolute. Relative values resolve against the MANIFEST's own URL, not the page's -- and this manifest lives in /icons/, so \".\" became /icons/ (a 404 when launched from the home screen) and \"icons/icon-192.png\" became /icons/icons/icon-192.png.",
+
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#0d1117",
+  "orientation": "portrait-primary",
+
+  "background_color": "#282828",
+  "theme_color": "#282828",
+
   "icons": [
-    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
-    { "src": "icons/icon-maskable-512.png", "sizes": "512x512",
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512",
       "type": "image/png", "purpose": "maskable" }
   ]
 }
