@@ -88,7 +88,14 @@ $runner = Join-Path $Bin "run-collector.cmd"
 $runnerBody = @"
 @echo off
 rem Written by deploy/install-daemon.ps1. Edit that, not this.
-"$Exe" --publish "$Out" --loop ^
+rem --config and --web are spelled out rather than left to the default. The
+rem default is "servers.json beside the working directory, else beside the
+rem binary", and the binary lives in bin\, which holds neither -- so a launch
+rem that does not get the working directory it was registered with dies on
+rem "bin\servers.json: no such file". That happened once. Nothing else in this
+rem file depends on the working directory; now nothing does.
+"$Exe" --config "$Root\servers.json" --web "$Root\web" ^
+  --publish "$Out" --loop ^
   --upload-cmd "$Bin\up-first.cmd" ^
   --upload-cmd-tick "$Bin\up-status.cmd" ^
   --upload-cmd-stats "$Bin\up-stats.cmd" --stats-interval 60 ^
