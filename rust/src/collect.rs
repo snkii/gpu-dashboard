@@ -461,13 +461,13 @@ fn session(
     shared: &Arc<Shared>,
     stop: &Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let mut child: Child = Command::new("ssh")
-        .args(ssh_argv(cfg, srv))
+    let mut ssh = Command::new("ssh");
+    ssh.args(ssh_argv(cfg, srv))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .stdin(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("spawn ssh: {}", e))?;
+        .stdin(Stdio::null());
+    crate::no_window(&mut ssh);
+    let mut child: Child = ssh.spawn().map_err(|e| format!("spawn ssh: {}", e))?;
 
     let out = child.stdout.take().ok_or("no stdout")?;
     let reader = BufReader::new(out);

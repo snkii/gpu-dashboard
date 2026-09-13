@@ -97,7 +97,19 @@ rem Written by deploy/install-daemon.ps1. Edit that, not this.
 "@
 Set-Content -Path $runner -Value $runnerBody -Encoding ascii
 
-$arguments = "/c `"$runner`""
+# Launched through wscript, which has no window of its own, so the console
+# that cmd would otherwise put on the desktop every minute never appears.
+# Window style 0 is hidden; bWaitOnReturn True keeps this process alive for as
+# long as the collector runs, which is what lets the scheduler supervise it and
+# what makes MultipleInstances suppress the next minute's launch.
+$launcher = Join-Path $Bin "run-hidden.vbs"
+$launcherBody = @"
+' Written by deploy/install-daemon.ps1. Edit that, not this.
+CreateObject("WScript.Shell").Run "cmd /c ""$runner""", 0, True
+"@
+Set-Content -Path $launcher -Value $launcherBody -Encoding ascii
+
+$arguments = "`"$launcher`""
 
 if (Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) {
     # Unregister alone leaves a running instance holding the collector lock,
@@ -107,7 +119,7 @@ if (Get-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $Task -Confirm:$false
 }
 
-$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\cmd.exe" `
+$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\wscript.exe" `
                                   -Argument $arguments -WorkingDirectory $Root
 
 # At logon, then a poll every minute. When the collector is already up the
@@ -131,6 +143,9 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
 $settings.DisallowStartOnRemoteAppSession = $false
+# Keeps the task out of the way in the Task Scheduler UI; it does not affect
+# whether a window appears -- the launcher above is what does that.
+$settings.Hidden = $true
 $settings.RunOnlyIfNetworkAvailable = $false   # we retry ourselves, never skip
 
 Register-ScheduledTask -TaskName $Task -Action $action `

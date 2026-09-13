@@ -359,6 +359,21 @@ fn run_check(c: &Collector, n: usize) {
     println!("\n{}/{} up, {} GPUs visible", up, n, gpus);
 }
 
+/// Keep a child process from opening a console window.
+///
+/// The uploads run through cmd once every two seconds and there are thirteen
+/// ssh children besides. Without this the desktop is unusable: a console
+/// flashes several times a second and steals focus.
+#[cfg(windows)]
+pub fn no_window(c: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    c.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+pub fn no_window(_c: &mut std::process::Command) {}
+
 /// HH:MM:SS in local time, for the log. Every publisher line carries one: a
 /// log without times cannot answer "when did it stop", which is the only
 /// question anyone asks of it.
@@ -624,6 +639,7 @@ fn run_shell(cmd: &str, cwd: &str) -> std::io::Result<bool> {
     let mut c = if cfg!(windows) {
         let mut c = std::process::Command::new("cmd");
         c.arg("/c").arg(cmd);
+        no_window(&mut c);
         c
     } else {
         let mut c = std::process::Command::new("sh");

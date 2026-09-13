@@ -167,7 +167,10 @@ impl Summarizer {
         let cfg = curl_config(&self.model, key, &body_path.display().to_string(), self.timeout);
         fs::write(&cfg_path, cfg.as_bytes()).map_err(|e| e.to_string())?;
 
-        let out = Command::new("curl").arg("--config").arg(&cfg_path).output();
+        let mut cmd = Command::new("curl");
+        cmd.arg("--config").arg(&cfg_path);
+        crate::no_window(&mut cmd);
+        let out = cmd.output();
         // Delete both before inspecting the result, so an early return cannot
         // leave the key sitting in the temp directory.
         let _ = fs::remove_file(&cfg_path);
