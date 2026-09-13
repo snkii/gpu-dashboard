@@ -1037,22 +1037,33 @@ def _delegate_to_rust(argv):
 
     args = list(argv)
 
-    # Point every upload command at the copy of rclone that ships beside the
-    # binary. winget installs into a version-stamped directory, so the path
-    # baked into the task breaks the next time rclone is upgraded.
-    if os.path.exists(BUNDLED_RCLONE):
-        args = [_repoint_rclone(a) for a in args]
-
-    # Statistics options the old task line predates.
-    if not any(a == "--upload-cmd-stats" for a in args):
-        tick = None
-        for i, a in enumerate(args):
-            if a == "--upload-cmd-tick" and i + 1 < len(args):
-                tick = args[i + 1]
-        if tick and "status.json" in tick:
-            args += ["--upload-cmd-stats", tick.replace("status.json", "stats.json")]
-    if not any(a == "--stats-interval" for a in args):
-        args += ["--stats-interval", "60"]
+    # Replace each upload command with the .cmd file that generates it.
+    #
+    # The task line predates those files and passes the commands inline, as
+    # strings whose quotes are backslash-escaped for one layer of parsing and
+    # then survive into the next one:
+    #
+    #     '\"C:\...\rclone.exe\"' is not recognized as an internal or
+    #     external command
+    #
+    # Rewriting only the rclone path inside such a string keeps the escaping
+    # that breaks it. A .cmd file path has no spaces, so it needs no quoting at
+    # any layer. The files come from deploy/install-daemon.ps1.
+    #
+    # This failed silently for hours after a power cut: the boot path starts
+    # before the watchdog does, and the collector kept publishing locally while
+    # every upload failed.
+    for flag, script in (("--upload-cmd", "up-first.cmd"),
+                         ("--upload-cmd-tick", "up-status.cmd"),
+                         ("--upload-cmd-stats", "up-stats.cmd"),
+                         ("--upload-cmd-summary", "up-summary.cmd")):
+        path = os.path.join(ROOT, "bin", script)
+        if not os.path.exists(path):
+            continue
+        if flag in args:
+            args[args.index(flag) + 1] = path
+        else:
+            args += [flag, path]
 
     print("[hilmon] delegating to {}".format(RUST_EXE), flush=True)
     # Spawn and wait rather than os.execv: Windows has no real exec, so execv
