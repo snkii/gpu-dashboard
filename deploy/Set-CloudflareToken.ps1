@@ -17,13 +17,18 @@
 
         Zone / Zone Settings / Edit      changes TLS version, Always Use HTTPS
         Zone / Transform Rules / Edit    deploys the security headers
+        Zone / WAF / Edit                the rule that limits the site to campus
         Zone / Zone / Read               looks the zone up by name
 
     and under "Zone Resources" pick the single zone, not "All zones".
 
     A token like that cannot read R2, cannot touch DNS, cannot see billing, and
     cannot reach any other domain. If it leaks, the worst case is someone
-    editing headers on one site.
+    editing headers on one site, or taking the campus restriction off it.
+
+    A token with every permission does not belong in a file. It can move money,
+    read every zone, and mint more credentials; the blast radius of the file
+    leaking stops being "one site" and becomes "the whole account".
 
     Usage:
         .\deploy\Set-CloudflareToken.ps1
@@ -59,7 +64,7 @@ New-Item -ItemType Directory -Force -Path $dir | Out-Null
 if (-not $Verify) {
     Write-Host "Paste the Cloudflare API token. Input is masked and is not echoed."
     Write-Host "  Scope it to ONE zone with Zone Settings:Edit + Transform Rules:Edit"
-    Write-Host "  (+ Zone:Read). Anything wider than that does not belong in a file.`n"
+    Write-Host "  + WAF:Edit (+ Zone:Read). Anything wider does not belong in a file.`n"
     $secure = Read-Host "Cloudflare API token" -AsSecureString
     $bstr   = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     try { $tok = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
