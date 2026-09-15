@@ -653,7 +653,7 @@ function updateCard(c, s) {
   setText(c.badge, !up
     ? (pending ? "대기" : s.status === "timeout" ? "TIMEOUT"
        : s.status === "nogpu" ? "NO GPU" : "DOWN")
-    : (gpus.length - busy) + " / " + gpus.length + " 여유");
+    : busy + " / " + gpus.length + " 사용중");
 
   var f = [];
   if (s.loc) f.push(s.loc);
@@ -872,7 +872,7 @@ function updateRooms(byName) {
     }
 
     var busy = gpus.filter(isBusy).length;
-    setText(u.stat, (gpus.length - busy) + "/" + gpus.length + " 여유");
+    setText(u.stat, busy + "/" + gpus.length + " 사용중");
     if (u.built !== "up" + gpus.length) {
       u.built = "up" + gpus.length;
       buildCells(u, gpus.length, "idle");
@@ -947,12 +947,12 @@ function updateJump(servers) {
       JUMP.set(s.name, j);
     }
     var up = s.status === "ok", gpus = s.gpus || [];
-    var free = up ? gpus.filter(function (g) { return !isBusy(g); }).length : 0;
+    var busy = up ? gpus.filter(isBusy).length : 0;
     setAttr(j.root, "a", s.status === "pending" ? "wait" : !up ? "down"
-      : free > 0 ? "free" : "full");
+      : busy < gpus.length ? "free" : "full");
     setText(j.sub, !up ? (s.status === "pending" ? "·" : "—")
-      : free + "/" + gpus.length);
-    var t = s.name + (up ? " · " + free + "/" + gpus.length + " 여유" : " · 응답 없음");
+      : busy + "/" + gpus.length);
+    var t = s.name + (up ? " · " + busy + "/" + gpus.length + " 사용중" : " · 응답 없음");
     if (j.root.title !== t) j.root.title = t;
   });
 }
