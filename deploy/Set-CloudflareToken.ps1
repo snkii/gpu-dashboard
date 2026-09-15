@@ -47,6 +47,11 @@ $dir  = Join-Path $env:USERPROFILE '.hilgpu'
 $path = Join-Path $dir 'cloudflare.token'
 $api  = 'https://api.cloudflare.com/client/v4'
 
+# Only for the account id, and only to verify. Missing settings are not fatal:
+# storing a token has to keep working on a machine that has not been set up yet.
+$S = $null
+try { $S = & (Join-Path $PSScriptRoot 'load-settings.ps1') } catch { }
+
 if ($Remove) {
     if (Test-Path $path) {
         Remove-Item $path -Force
@@ -106,15 +111,25 @@ $hdr = @{ Authorization = "Bearer $stored"; 'Content-Type' = 'application/json' 
 $stored = $null
 
 Write-Host "`nverifying with Cloudflare..."
-try {
-    $v = Invoke-RestMethod -Uri "$api/user/tokens/verify" -Headers $hdr -TimeoutSec 25
-} catch {
-    $msg = $_.Exception.Message
-    if ($_.ErrorDetails.Message) { $msg = $_.ErrorDetails.Message }
-    Write-Host "REJECTED: $msg" -ForegroundColor Red
+
+# Two kinds of token, two verify endpoints. A token made under the user profile
+# answers at /user/tokens/verify; one made under an account answers only at
+# /accounts/<id>/tokens/verify and returns a flat 401 "Invalid API Token" at the
+# user endpoint -- which reads exactly like a bad paste and is not. So try both
+# before calling it rejected.
+$v = $null
+foreach ($uri in @("$api/user/tokens/verify", "$api/accounts/$($S.AccountId)/tokens/verify")) {
+    if ($uri -match '/accounts//') { continue }      # no account id configured
+    try {
+        $r = Invoke-RestMethod -Uri $uri -Headers $hdr -TimeoutSec 25
+        if ($r.success) { $v = $r; break }
+    } catch { }
+}
+if (-not $v) {
+    Write-Host "REJECTED: neither the user nor the account endpoint accepted it." -ForegroundColor Red
+    Write-Host "Check that the whole token pasted, and that it has not been rolled."
     exit 1
 }
-if (-not $v.success) { Write-Host "REJECTED: $($v.errors | ConvertTo-Json -Compress)" -ForegroundColor Red; exit 1 }
 Write-Host "token status : $($v.result.status)" -ForegroundColor Green
 
 # Show what it can actually reach, so an over-broad token is obvious now
