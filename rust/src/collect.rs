@@ -222,18 +222,18 @@ pub struct Collector {
 }
 
 impl Collector {
-    pub fn new(cfg: Config) -> Collector {
+    /// `stats_dir` is where the history is kept. The caller passes it rather
+    /// than it being derived from the working directory here: a launch that
+    /// does not get the directory it was registered with would otherwise start
+    /// a second, empty history somewhere else and go on writing to it, with
+    /// nothing to say the old one had been left behind.
+    pub fn new(cfg: Config, stats_dir: std::path::PathBuf) -> Collector {
         let mut samples = BTreeMap::new();
         for s in cfg.active() {
             samples.insert(s.name.clone(), Sample::default());
         }
         let power = PowerLog::new(cfg.power_points, cfg.power_log);
-        let stats = Db::open(
-            std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                .join("stats"),
-            cfg.stats_period,
-        );
+        let stats = Db::open(stats_dir, cfg.stats_period);
         Collector {
             cfg: Arc::new(cfg),
             shared: Arc::new(Shared {

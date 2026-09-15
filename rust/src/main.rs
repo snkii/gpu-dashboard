@@ -144,6 +144,21 @@ fn parse_args() -> Result<Args, String> {
     Ok(a)
 }
 
+/// Where the history lives: beside servers.json.
+///
+/// Not beside the working directory. A scheduled launch does not reliably
+/// arrive with the directory it was registered with -- one such launch already
+/// died looking for `bin\servers.json` -- and this path failing is worse than
+/// that one was, because it does not fail. It quietly starts a second, empty
+/// history in the wrong place and keeps writing to it. The config path is the
+/// one location the caller always spells out, so anchor to that.
+fn stats_dir(config: &str) -> PathBuf {
+    PathBuf::from(config)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("stats")
+}
+
 fn print_help() {
     println!(
         "hilmon - HIL GPU monitor\n\n\
@@ -221,7 +236,7 @@ fn main() {
         }
     };
 
-    let mut c = Collector::new(cfg);
+    let mut c = Collector::new(cfg, stats_dir(&args.config));
     c.start();
     let c = Arc::new(c);
 
@@ -678,5 +693,28 @@ fn copy_web(web: &PathBuf, dir: &str) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stats_live_beside_the_config_not_the_cwd() {
+        let sep = std::path::MAIN_SEPARATOR;
+        let got = stats_dir(&format!("C:{0}proj{0}servers.json", sep));
+        assert_eq!(got, PathBuf::from(format!("C:{0}proj{0}stats", sep)));
+
+        // The binary sits in bin/, which is the wrong place for the history --
+        // and is exactly where a launch with no working directory would have
+        // put it before this was anchored to the config.
+        let got = stats_dir(&format!("C:{0}proj{0}bin{0}servers.json", sep));
+        assert_eq!(got, PathBuf::from(format!("C:{0}proj{0}bin{0}stats", sep)));
+    }
+
+    #[test]
+    fn a_bare_filename_still_yields_a_usable_path() {
+        assert_eq!(stats_dir("servers.json"), PathBuf::from("stats"));
     }
 }
