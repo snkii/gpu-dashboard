@@ -202,10 +202,13 @@ struct Shared {
     samples: Mutex<BTreeMap<String, Sample>>,
     power: Mutex<PowerLog>,
     db: Mutex<Db>,
-    /// The live ssh process per server, so something other than its own reader
-    /// can end it. A reader blocked on a pipe that will never produce again
-    /// cannot time itself out; the pipe has to be closed from outside.
-    kids: Mutex<BTreeMap<String, Child>>,
+    /// The live ssh process per server with the moment it was spawned, so
+    /// something other than its own reader can end it. A reader blocked on a
+    /// pipe that will never produce again cannot time itself out; the pipe has
+    /// to be closed from outside. The spawn time is what separates a stream
+    /// that has been connected and silent from one still waiting its turn at
+    /// the rate gate.
+    kids: Mutex<BTreeMap<String, (u64, Child)>>,
 }
 
 /// Columns published for each server. `gpus == 0` marks a slot with no data.
@@ -294,25 +297,28 @@ impl Collector {
                 thread::sleep(Duration::from_secs(1));
             }
             let now = gate::now() as u64;
-            let stalled: Vec<String> = {
+            let spawned: BTreeMap<String, u64> = shared
+                .kids
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(k, (t, _))| (k.clone(), *t))
+                .collect();
+            let wedged: Vec<String> = {
                 let smp = shared.samples.lock().unwrap();
                 smp.iter()
-                    .filter(|(_, v)| {
-                        v.status == Status::Ok
-                            && v.ts > 0
-                            && now.saturating_sub(v.ts) > STALE_AFTER_SEC
-                    })
+                    .filter(|(k, v)| is_wedged(&v.status, v.ts, spawned.get(*k).copied(), now))
                     .map(|(k, _)| k.clone())
                     .collect()
             };
-            for name in stalled {
+            for name in wedged {
                 eprintln!(
                     "{}   {}: silent for over {}s, restarting the stream",
                     crate::stamp(),
                     name,
                     STALE_AFTER_SEC
                 );
-                if let Some(c) = shared.kids.lock().unwrap().get_mut(&name) {
+                if let Some((_, c)) = shared.kids.lock().unwrap().get_mut(&name) {
                     let _ = c.kill();
                 }
             }
@@ -533,7 +539,7 @@ fn session(
         .kids
         .lock()
         .unwrap()
-        .insert(srv.name.clone(), child);
+        .insert(srv.name.clone(), (gate::now() as u64, child));
     let reader = BufReader::new(out);
     let mut buf = String::new();
     let mut last_host: Option<Host> = None;
@@ -586,13 +592,37 @@ fn session(
     Err(msg)
 }
 
+/// Should this stream be torn down and started again?
+///
+/// Two shapes of the same fault, and neither of them ends on its own:
+///
+///   - `Ok` with a timestamp that stopped advancing. The stream delivered for
+///     a while and then the far side went quiet, leaving the last readings in
+///     place with `Ok` still on them.
+///   - `Pending` with a live ssh process and no first block at all. Same
+///     cause, caught before anything ever arrived, so there is no timestamp to
+///     measure and the sample never leaves `Pending`.
+///
+/// `Pending` with no process is a stream still waiting its turn at the rate
+/// gate -- at startup that is half a minute for the last of thirteen -- and is
+/// not a fault. That is the whole reason the spawn time is recorded.
+fn is_wedged(status: &Status, ts: u64, spawned_at: Option<u64>, now: u64) -> bool {
+    match status {
+        Status::Ok => ts > 0 && now.saturating_sub(ts) > STALE_AFTER_SEC,
+        Status::Pending => {
+            spawned_at.map_or(false, |t| now.saturating_sub(t) > STALE_AFTER_SEC)
+        }
+        _ => false,
+    }
+}
+
 /// Take the process back out of `Shared` and make sure it is gone.
 ///
 /// Called on every exit from a session, including the one the watchdog caused:
 /// killing a process that has already exited is harmless, and leaving a slot
 /// behind would let a later kill land on a pid that no longer belongs to us.
 fn reap(shared: &Arc<Shared>, name: &str) {
-    if let Some(mut c) = shared.kids.lock().unwrap().remove(name) {
+    if let Some((_, mut c)) = shared.kids.lock().unwrap().remove(name) {
         let _ = c.kill();
         let _ = c.wait();
     }
@@ -676,6 +706,45 @@ fn set_state(shared: &Arc<Shared>, name: &str, st: Status, err: &str) {
 
 #[cfg(test)]
 mod tests {
+    const T: u64 = STALE_AFTER_SEC;
+
+    #[test]
+    fn a_stream_that_went_quiet_is_restarted() {
+        // Delivered, then stopped. The sample still says Ok.
+        assert!(!is_wedged(&Status::Ok, 1_000, None, 1_000 + T));
+        assert!(is_wedged(&Status::Ok, 1_000, None, 1_000 + T + 1));
+    }
+
+    #[test]
+    fn a_stream_that_never_delivered_is_restarted_too() {
+        // Connected -- there is a process -- but no first block ever arrived,
+        // so ts is still zero and the sample never leaves Pending.
+        assert!(!is_wedged(&Status::Pending, 0, Some(1_000), 1_000 + T));
+        assert!(is_wedged(&Status::Pending, 0, Some(1_000), 1_000 + T + 1));
+    }
+
+    #[test]
+    fn waiting_at_the_rate_gate_is_not_a_fault() {
+        // Pending with no process means the connection has not been made yet.
+        // At startup the last of thirteen waits half a minute for its turn;
+        // killing something here would be killing nothing, forever.
+        assert!(!is_wedged(&Status::Pending, 0, None, 9_999_999));
+    }
+
+    #[test]
+    fn a_server_already_known_to_be_down_is_left_to_its_backoff() {
+        // The supervisor is already sleeping before its next attempt. Nothing
+        // to kill, and pretending otherwise would fight the backoff that keeps
+        // a powered-off host from being hammered.
+        assert!(!is_wedged(&Status::Down, 1_000, None, 9_999_999));
+        assert!(!is_wedged(&Status::NoGpu, 1_000, Some(1_000), 9_999_999));
+    }
+
+    #[test]
+    fn a_fresh_sample_with_no_timestamp_is_not_restarted() {
+        assert!(!is_wedged(&Status::Ok, 0, None, 9_999_999));
+    }
+
     use super::*;
 
     const BLOCK: &str = "\
