@@ -184,10 +184,6 @@
                    margin: 5px 0 0; }
   }
 
-  .banner { margin: 0 0 10px; padding: 9px 11px; border-radius: var(--radius);
-            font-size: 12.5px; background: var(--warn-bg); color: var(--orange);
-            border: 1px solid var(--yellow-b); }
-
   /* ---------- server view ---------- */
   /* Columns are real elements, filled across by columnize().
 
@@ -418,7 +414,6 @@
     </div>
   </header>
 
-  <div id="banner" class="banner hide"></div>
   <noscript><div class="empty">이 대시보드는 JavaScript가 필요합니다.</div></noscript>
   <div id="boot" class="empty"><div class="spin"></div>서버 상태를 수집하고 있습니다…</div>
 
@@ -1005,7 +1000,6 @@ function render() {
      warning, so hold the spinner until actual data arrives. */
   if (!d.generated_at) {
     $("boot").classList.remove("hide");
-    $("banner").classList.add("hide");
     $("grid").classList.add("hide");
     $("none").classList.add("hide");
     setText($("hts"), "수집 중…");
@@ -1021,19 +1015,19 @@ function render() {
   var age = Math.max(0, Math.floor(Date.now() / 1000) - (d.generated_at || 0));
   /* The site is static and stays up even when the collector does not, so an
      old snapshot must be called out rather than shown as if it were live. */
-  var stale = age > Math.max(60, iv * 6);
-  setAttr($("dot"), "s", stale ? "err" : age > iv * 3 + 5 ? "warn" : "ok");
+  /* The dot carries this on its own. A banner across the top said the same
+     thing in a full sentence, and while one frozen stream was setting the
+     headline age it appeared over a dashboard that was in fact current to the
+     second -- a paragraph of alarm about nothing. The dot and the age beside
+     it are the whole message. */
+  setAttr($("dot"), "s", age > Math.max(60, iv * 6) ? "err"
+                       : age > iv * 3 + 5 ? "warn" : "ok");
   // Just the age. "1회전 Ns" described a polling sweep that no longer exists --
   // with persistent streams every server updates every second, so a sweep
   // duration is not a thing the viewer can act on.
   setText($("hts"), d.generated_at
     ? (age <= 2 ? "실시간" : age < 60 ? age + "초 전" : fmtAge(age) + " 전")
     : "수집 중…");
-  $("banner").classList.toggle("hide", !stale);
-  if (stale) {
-    setText($("banner"), "아래 수치는 " + fmtAge(age)
-      + " 전 값입니다. 수집기가 멈췄거나 데스크톱이 꺼져 있을 수 있습니다.");
-  }
 
   $("boot").classList.add("hide");
   updateJump(servers);
