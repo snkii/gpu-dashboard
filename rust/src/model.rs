@@ -161,6 +161,28 @@ pub enum Status {
     Pending,
     Down,
     NoGpu,
+    /// Connected, but the far side stopped talking. See `STALE_AFTER_SEC`.
+    Stale,
+}
+
+/// How long a sample may go without advancing before it stops counting as live.
+///
+/// An ssh session can stay perfectly healthy while the command on the other end
+/// stops producing -- a wedged nvidia-smi is the usual way -- and then nothing
+/// reports a problem. ssh sees a live connection, our reader simply blocks, and
+/// the sample keeps its last values with `Ok` still on them. Published as-is,
+/// hours-old numbers are indistinguishable from current ones.
+///
+/// The remote emits once a second, so this is two orders of magnitude of slack.
+pub const STALE_AFTER_SEC: u64 = 120;
+
+/// The status to publish, which is not always the status on the sample.
+pub fn effective_status(smp: &Sample, now: u64) -> Status {
+    if smp.status == Status::Ok && smp.ts > 0 && now.saturating_sub(smp.ts) > STALE_AFTER_SEC {
+        Status::Stale
+    } else {
+        smp.status.clone()
+    }
 }
 
 impl Status {
@@ -170,6 +192,7 @@ impl Status {
             Status::Pending => "pending",
             Status::Down => "down",
             Status::NoGpu => "nogpu",
+            Status::Stale => "stale",
         }
     }
 }
@@ -216,11 +239,25 @@ pub fn write_snapshot(
     let mut total = 0usize;
     let mut busy = 0usize;
     let mut up = 0usize;
-    let mut oldest: Option<u64> = None;
+    // The headline age answers "how current is this page", so it comes from
+    // the freshest live server, not the least fresh one. Taking the minimum
+    // made one disconnected host speak for the whole cluster: twelve servers
+    // current to the second, and the header saying eleven hours. Each server's
+    // own state is already on its own card, which is where it belongs.
+    //
+    // The fallback keeps the "collector is dead" banner working: if nothing is
+    // live there is no live timestamp to use, and the newest of whatever is
+    // left still shows how long ago that was.
+    let mut newest_live: Option<u64> = None;
+    let mut newest_any: Option<u64> = None;
+    let now = crate::gate::now() as u64;
 
     for s in order {
         if let Some(smp) = samples.get(&s.name) {
-            if smp.status == Status::Ok {
+            if smp.ts > 0 {
+                newest_any = Some(newest_any.map_or(smp.ts, |o: u64| o.max(smp.ts)));
+            }
+            if effective_status(smp, now) == Status::Ok {
                 up += 1;
                 for g in &smp.gpus {
                     total += 1;
@@ -228,9 +265,9 @@ pub fn write_snapshot(
                         busy += 1;
                     }
                 }
-            }
-            if smp.ts > 0 {
-                oldest = Some(oldest.map_or(smp.ts, |o: u64| o.min(smp.ts)));
+                if smp.ts > 0 {
+                    newest_live = Some(newest_live.map_or(smp.ts, |o: u64| o.max(smp.ts)));
+                }
             }
         }
     }
@@ -238,7 +275,7 @@ pub fn write_snapshot(
     let mut w = Writer::new();
     w.raw("{");
     w.key("generated_at");
-    w.num(oldest.unwrap_or(0) as f64);
+    w.num(newest_live.or(newest_any).unwrap_or(0) as f64);
     w.raw(",");
     w.key("poll_interval_sec");
     w.num(1.0);
@@ -297,7 +334,7 @@ pub fn write_snapshot(
         }
         let d = Sample::default();
         let smp = samples.get(&s.name).unwrap_or(&d);
-        write_server(&mut w, s, smp, public);
+        write_server(&mut w, s, smp, effective_status(smp, now), public);
     }
     w.raw("]");
 
@@ -310,7 +347,7 @@ pub fn write_snapshot(
     w.buf
 }
 
-fn write_server(w: &mut Writer, s: &Server, smp: &Sample, public: bool) {
+fn write_server(w: &mut Writer, s: &Server, smp: &Sample, status: Status, public: bool) {
     w.raw("{");
     w.key("name");
     w.str(&s.name);
@@ -328,7 +365,7 @@ fn write_server(w: &mut Writer, s: &Server, smp: &Sample, public: bool) {
     w.num(smp.ts as f64);
     w.raw(",");
     w.key("status");
-    w.str(smp.status.as_str());
+    w.str(status.as_str());
 
     if !public {
         // Internal mode keeps the address and the raw error, which is what
@@ -460,6 +497,42 @@ fn write_server(w: &mut Writer, s: &Server, smp: &Sample, public: bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_stream_that_stopped_talking_is_not_reported_as_live() {
+        let mut smp = Sample::default();
+        smp.status = Status::Ok;
+        smp.ts = 1_000_000;
+
+        // Inside the window it is simply live.
+        assert_eq!(effective_status(&smp, 1_000_000 + 5), Status::Ok);
+        assert_eq!(effective_status(&smp, 1_000_000 + STALE_AFTER_SEC), Status::Ok);
+
+        // Past it, the Ok on the sample stops being the truth. This is the
+        // case that shipped hours-old numbers as current readings.
+        assert_eq!(
+            effective_status(&smp, 1_000_000 + STALE_AFTER_SEC + 1),
+            Status::Stale
+        );
+    }
+
+    #[test]
+    fn staleness_does_not_relabel_a_server_that_is_already_down() {
+        let mut smp = Sample::default();
+        smp.status = Status::Down;
+        smp.ts = 1_000_000;
+        assert_eq!(effective_status(&smp, 2_000_000), Status::Down);
+    }
+
+    #[test]
+    fn a_sample_with_no_timestamp_yet_is_left_alone() {
+        // Before the first block arrives ts is zero; age is meaningless then,
+        // and calling that stale would flag every server at startup.
+        let mut smp = Sample::default();
+        smp.status = Status::Ok;
+        smp.ts = 0;
+        assert_eq!(effective_status(&smp, 9_999_999), Status::Ok);
+    }
+
     use super::*;
 
     fn srv(name: &str) -> Server {

@@ -202,6 +202,10 @@ struct Shared {
     samples: Mutex<BTreeMap<String, Sample>>,
     power: Mutex<PowerLog>,
     db: Mutex<Db>,
+    /// The live ssh process per server, so something other than its own reader
+    /// can end it. A reader blocked on a pipe that will never produce again
+    /// cannot time itself out; the pipe has to be closed from outside.
+    kids: Mutex<BTreeMap<String, Child>>,
 }
 
 /// Columns published for each server. `gpus == 0` marks a slot with no data.
@@ -238,6 +242,7 @@ impl Collector {
             cfg: Arc::new(cfg),
             shared: Arc::new(Shared {
                 samples: Mutex::new(samples),
+                kids: Mutex::new(BTreeMap::new()),
                 power: Mutex::new(power),
                 db: Mutex::new(stats),
             }),
@@ -261,6 +266,56 @@ impl Collector {
             self.handles.push(thread::spawn(move || {
                 worker(cfg, shared, stop, gate, name);
             }));
+        }
+        let shared = Arc::clone(&self.shared);
+        let stop = Arc::clone(&self.stop);
+        self.handles
+            .push(thread::spawn(move || Collector::watch_for_stalls(shared, stop)));
+    }
+
+    /// Restart a stream that has gone quiet.
+    ///
+    /// ssh keepalives catch a dead link, not a live one carrying nothing, and
+    /// that is the case that actually happened: one host kept a healthy
+    /// session while its remote loop stopped, so the sample froze with `Ok`
+    /// still on it and eleven hours later the dashboard was still presenting
+    /// those numbers as current.
+    ///
+    /// Killing the process closes the pipe, the reader unblocks, and the
+    /// supervisor reconnects the same way it does after any other drop --
+    /// through the rate gate, with the same backoff. No new path to the
+    /// network is introduced, so the connection ceiling still holds.
+    fn watch_for_stalls(shared: Arc<Shared>, stop: Arc<AtomicBool>) {
+        while !stop.load(Ordering::SeqCst) {
+            for _ in 0..15 {
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+            let now = gate::now() as u64;
+            let stalled: Vec<String> = {
+                let smp = shared.samples.lock().unwrap();
+                smp.iter()
+                    .filter(|(_, v)| {
+                        v.status == Status::Ok
+                            && v.ts > 0
+                            && now.saturating_sub(v.ts) > STALE_AFTER_SEC
+                    })
+                    .map(|(k, _)| k.clone())
+                    .collect()
+            };
+            for name in stalled {
+                eprintln!(
+                    "{}   {}: silent for over {}s, restarting the stream",
+                    crate::stamp(),
+                    name,
+                    STALE_AFTER_SEC
+                );
+                if let Some(c) = shared.kids.lock().unwrap().get_mut(&name) {
+                    let _ = c.kill();
+                }
+            }
         }
     }
 
@@ -470,6 +525,15 @@ fn session(
     let mut child: Child = ssh.spawn().map_err(|e| format!("spawn ssh: {}", e))?;
 
     let out = child.stdout.take().ok_or("no stdout")?;
+    let mut errpipe = child.stderr.take();
+    // Hand the process over before blocking on its output. From here on the
+    // stall watchdog can close this pipe, which is the only thing that will
+    // wake a reader whose far side has gone silent for good.
+    shared
+        .kids
+        .lock()
+        .unwrap()
+        .insert(srv.name.clone(), child);
     let reader = BufReader::new(out);
     let mut buf = String::new();
     let mut last_host: Option<Host> = None;
@@ -477,13 +541,13 @@ fn session(
 
     for line in reader.lines() {
         if stop.load(Ordering::SeqCst) {
-            let _ = child.kill();
+            reap(shared, &srv.name);
             return Ok(());
         }
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                let _ = child.kill();
+                reap(shared, &srv.name);
                 return Err(format!("read: {}", e));
             }
         };
@@ -508,11 +572,11 @@ fn session(
 
     // stdout closed: the remote command exited or the link dropped.
     let mut err = String::new();
-    if let Some(mut e) = child.stderr.take() {
+    if let Some(mut e) = errpipe.take() {
         use std::io::Read;
         let _ = e.read_to_string(&mut err);
     }
-    let _ = child.wait();
+    reap(shared, &srv.name);
     let msg = err
         .lines()
         .rev()
@@ -520,6 +584,18 @@ fn session(
         .unwrap_or(if got_any { "stream ended" } else { "no data" })
         .to_string();
     Err(msg)
+}
+
+/// Take the process back out of `Shared` and make sure it is gone.
+///
+/// Called on every exit from a session, including the one the watchdog caused:
+/// killing a process that has already exited is harmless, and leaving a slot
+/// behind would let a later kill land on a pid that no longer belongs to us.
+fn reap(shared: &Arc<Shared>, name: &str) {
+    if let Some(mut c) = shared.kids.lock().unwrap().remove(name) {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
 }
 
 fn commit(shared: &Arc<Shared>, name: &str, gpus: Vec<Gpu>, host: Option<Host>) {

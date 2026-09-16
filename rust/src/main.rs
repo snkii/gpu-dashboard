@@ -392,7 +392,7 @@ pub fn no_window(_c: &mut std::process::Command) {}
 /// HH:MM:SS in local time, for the log. Every publisher line carries one: a
 /// log without times cannot answer "when did it stop", which is the only
 /// question anyone asks of it.
-fn stamp() -> String {
+pub fn stamp() -> String {
     let secs = gate::now() as i64 + local_offset();
     let d = secs.rem_euclid(86_400);
     format!("{:02}:{:02}:{:02}", d / 3600, (d % 3600) / 60, d % 60)
