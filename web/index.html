@@ -83,8 +83,12 @@
   .meta { margin-left: auto; font-size: 11.5px; color: var(--fg4);
           display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green-b); flex: none; }
-  .dot.warn { background: var(--yellow-b); }
-  .dot.err { background: var(--red-b); }
+  /* State goes on a data attribute, not a class. `.err` is already a class in
+     this stylesheet -- an error message block, with padding on it -- and
+     `class="dot err"` picked that padding up, so the dot grew to 22px the
+     moment anything went wrong and shrank back to 7px when it recovered. */
+  .dot[data-s="warn"] { background: var(--yellow-b); }
+  .dot[data-s="err"]  { background: var(--red-b); }
 
   .tgl { flex: none; width: 26px; height: 26px; padding: 0; font-size: 13px; line-height: 1;
          border: 1px solid var(--bg3); border-radius: 7px; background: var(--bg0h);
@@ -650,8 +654,11 @@ function updateCard(c, s) {
   var pending = s.status === "pending";
   setAttr(c.badge, "s", pending ? "wait" : !up ? "down"
     : (gpus.length && busy === gpus.length ? "busy" : "ok"));
+  /* "지연" is not "DOWN": the host answers, its stream stopped. Saying DOWN
+     would send someone to a machine that is running fine. */
   setText(c.badge, !up
-    ? (pending ? "대기" : s.status === "timeout" ? "TIMEOUT"
+    ? (pending ? "대기" : s.status === "stale" ? "지연"
+       : s.status === "timeout" ? "TIMEOUT"
        : s.status === "nogpu" ? "NO GPU" : "DOWN")
     : busy + " / " + gpus.length + " 사용중");
 
@@ -864,6 +871,7 @@ function updateRooms(byName) {
 
     if (!up) {
       setText(u.stat, s.status === "pending" ? "대기"
+        : s.status === "stale" ? "지연"
         : s.status === "timeout" ? "TIMEOUT" : "DOWN");
       var n = s.n_gpu_expected || 0;
       if (u.built !== "down" + n) { u.built = "down" + n; buildCells(u, n, "na"); }
@@ -1001,7 +1009,7 @@ function render() {
     $("grid").classList.add("hide");
     $("none").classList.add("hide");
     setText($("hts"), "수집 중…");
-    $("dot").className = "dot warn";
+    setAttr($("dot"), "s", "warn");
     return;
   }
 
@@ -1014,7 +1022,7 @@ function render() {
   /* The site is static and stays up even when the collector does not, so an
      old snapshot must be called out rather than shown as if it were live. */
   var stale = age > Math.max(60, iv * 6);
-  $("dot").className = "dot" + (stale ? " err" : age > iv * 3 + 5 ? " warn" : "");
+  setAttr($("dot"), "s", stale ? "err" : age > iv * 3 + 5 ? "warn" : "ok");
   // Just the age. "1회전 Ns" described a polling sweep that no longer exists --
   // with persistent streams every server updates every second, so a sweep
   // duration is not a thing the viewer can act on.
@@ -1072,7 +1080,7 @@ var AI_BUSY = false, AI_TIMER = 0;
 function loadSummary() {
   if (AI_BUSY) return;
   AI_BUSY = true;
-  fetch("summary.json", { cache: "no-cache", credentials: "same-origin" })
+  fetchFresh("summary.json", 15000)
     .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
     .then(function (j) {
       AI_BUSY = false;
@@ -1123,6 +1131,26 @@ function paintSummaryAge() {
   setText($("ai-ts"), age < 60 ? "방금" : fmtAge(age) + " 전");
 }
 
+/* Fetch with a deadline.
+   Both polls guard against queueing behind a slow request with an in-flight
+   flag, and both clear that flag when the request settles. A request that
+   never settles -- the usual way being a connection torn down while the device
+   slept -- therefore wedges the flag on, and that poll never runs again for the
+   life of the tab. Nothing looks broken: the other poll carries on, so the page
+   is plainly live, and the only symptom is one timestamp counting upward all
+   night. An abort turns "never" into a rejection, which the existing catch
+   already handles. */
+function fetchFresh(url, ms) {
+  var opt = { cache: "no-cache", credentials: "same-origin" };
+  var ctl = window.AbortController ? new AbortController() : null;
+  if (ctl) opt.signal = ctl.signal;
+  var t = setTimeout(function () { if (ctl) ctl.abort(); }, ms);
+  return fetch(url, opt).then(
+    function (r) { clearTimeout(t); return r; },
+    function (e) { clearTimeout(t); throw e; }
+  );
+}
+
 function poll() {
   if (INFLIGHT) return;                 // never queue behind a slow fetch
   INFLIGHT = true;
@@ -1130,7 +1158,7 @@ function poll() {
      itself and turns a 304 back into a 200 from cache, so we get the bandwidth
      saving without hand-rolling ETag headers -- which iOS Safari is entitled
      to drop when combined with cache:"no-store". */
-  fetch("status.json", { cache: "no-cache", credentials: "same-origin" })
+  fetchFresh("status.json", 10000)
     .then(function (r) {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
@@ -1138,7 +1166,7 @@ function poll() {
     .then(function (j) { INFLIGHT = false; LAST = j; render(); paintSummaryAge(); })
     .catch(function (e) {
       INFLIGHT = false;
-      $("dot").className = "dot err";
+      setAttr($("dot"), "s", "err");
       setText($("hts"), "수집기 연결 실패");
       if (!LAST) {
         $("boot").classList.remove("hide");
@@ -1540,7 +1568,11 @@ document.addEventListener("visibilitychange", function () {
   if (document.hidden) {
     clearInterval(TIMER); clearInterval(ST_TIMER); clearInterval(AI_TIMER);
   }
-  else { poll(); startTimer(); }        // no background battery drain
+  // Coming back, refresh both files at once rather than only the status and
+  // leaving the briefing to whenever its two-minute timer next comes round.
+  // A tab that was asleep all night is exactly the one whose briefing is most
+  // out of date, and it is the timestamp the reader looks at first.
+  else { poll(); loadSummary(); startTimer(); }   // no background battery drain
 });
 poll();
 </script>
