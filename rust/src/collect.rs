@@ -491,6 +491,13 @@ fn worker(
         match session(&cfg, &srv, &shared, &stop) {
             Ok(_) => fails = 0,
             Err(e) => {
+                // Say why, here, where a person can read it. The reason lives
+                // on the sample, but the sample is not published with it --
+                // ssh error text names hosts and accounts, so `public` drops
+                // it -- and there is no other copy. A server would sit at DOWN
+                // with nothing anywhere to say whether it was refused, timed
+                // out, or had its key rejected.
+                eprintln!("{}   {}: {}", crate::stamp(), name, e);
                 set_state(&shared, &name, Status::Down, &e);
             }
         }

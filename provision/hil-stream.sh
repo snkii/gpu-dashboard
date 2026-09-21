@@ -31,16 +31,33 @@ else
     TO=""
 fi
 
+# Skip cards that cannot be queried, listed one per host in ~/.hil-gpus as
+# e.g. "0,1,2,3,4,6,7".
+#
+# `timeout` above is not enough for this. A card whose driver has wedged puts
+# nvidia-smi into uninterruptible sleep, where it ignores the signal timeout
+# sends, so the query never returns and the whole stream stops -- no GPU
+# block, no host block, nothing, while the ssh session stays perfectly
+# healthy. The only way past it is not to ask about that card.
+#
+# The value is stripped to digits and commas before use. This script is a
+# forced command: whatever it runs, that key can run.
+GPU_SEL=''
+if [ -r "$HOME/.hil-gpus" ]; then
+    sel=$(tr -cd '0-9,' < "$HOME/.hil-gpus")
+    [ -n "$sel" ] && GPU_SEL="-i $sel"
+fi
+
 GPU_Q='index,name,uuid,utilization.gpu,memory.used,memory.total,power.draw,power.limit,temperature.gpu,fan.speed'
 
 i=0
 while :; do
     echo '###GPU'
-    $TO nvidia-smi --query-gpu="$GPU_Q" --format=csv,noheader,nounits 2>/dev/null
+    $TO nvidia-smi $GPU_SEL --query-gpu="$GPU_Q" --format=csv,noheader,nounits 2>/dev/null
 
     if [ $((i % SLOW)) -eq 0 ]; then
         echo '###PROC'
-        $TO nvidia-smi --query-compute-apps=gpu_uuid,pid,used_gpu_memory \
+        $TO nvidia-smi $GPU_SEL --query-compute-apps=gpu_uuid,pid,used_gpu_memory \
             --format=csv,noheader,nounits 2>/dev/null
         # No ###PS. The old one-shot script shipped the whole process table --
         # thousands of lines on a busy box -- and the dashboard only ever used
