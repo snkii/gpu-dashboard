@@ -192,11 +192,16 @@ def provision_one(srv, admin, password, login_pub, monitor_pub, dry_run=False):
         rc, home, _ = run(client, "getent passwd sukim | cut -d: -f6")
         home = home.strip() or "/home/sukim"
         ak = posixpath.join(home, ".ssh", "authorized_keys")
+        # The account can outlive its home: a server that loses its /home disk
+        # keeps /etc/passwd, so useradd is skipped. `install -d` alone would then
+        # create the home as root, and install-stream.py (which runs as sukim)
+        # could not write ~/.hil-stream into it.
         rc, out, err = run(
             client,
-            "sudo -S -p '' sh -c 'install -d -m 700 -o sukim -g sukim %s && "
+            "sudo -S -p '' sh -c '{ [ -d %s ] || install -d -m 750 -o sukim -g sukim %s; } && "
+            "install -d -m 700 -o sukim -g sukim %s && "
             "touch %s && chown sukim:sukim %s && chmod 600 %s'"
-            % (posixpath.join(home, ".ssh"), ak, ak, ak),
+            % (home, home, posixpath.join(home, ".ssh"), ak, ak, ak),
             password=password)
         if rc != 0:
             return "FAILED", [".ssh setup: %s" % (err.strip() or rc)]
