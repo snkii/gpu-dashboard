@@ -223,6 +223,8 @@ const COLS: [(&str, fn(&Row) -> f64); 6] = [
 
 pub struct Collector {
     cfg: Arc<Config>,
+    /// Watched by a worker whose key was rejected; see `park_until_changed`.
+    cfg_path: Arc<std::path::PathBuf>,
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
     handles: Vec<thread::JoinHandle<()>>,
@@ -234,7 +236,7 @@ impl Collector {
     /// does not get the directory it was registered with would otherwise start
     /// a second, empty history somewhere else and go on writing to it, with
     /// nothing to say the old one had been left behind.
-    pub fn new(cfg: Config, stats_dir: std::path::PathBuf) -> Collector {
+    pub fn new(cfg: Config, stats_dir: std::path::PathBuf, cfg_path: std::path::PathBuf) -> Collector {
         let mut samples = BTreeMap::new();
         for s in cfg.active() {
             samples.insert(s.name.clone(), Sample::default());
@@ -243,6 +245,7 @@ impl Collector {
         let stats = Db::open(stats_dir, cfg.stats_period);
         Collector {
             cfg: Arc::new(cfg),
+            cfg_path: Arc::new(cfg_path),
             shared: Arc::new(Shared {
                 samples: Mutex::new(samples),
                 kids: Mutex::new(BTreeMap::new()),
@@ -265,9 +268,10 @@ impl Collector {
             let shared = Arc::clone(&self.shared);
             let stop = Arc::clone(&self.stop);
             let gate = Arc::clone(&gate);
+            let cfg_path = Arc::clone(&self.cfg_path);
             let name = s.name.clone();
             self.handles.push(thread::spawn(move || {
-                worker(cfg, shared, stop, gate, name);
+                worker(cfg, cfg_path, shared, stop, gate, name);
             }));
         }
         let shared = Arc::clone(&self.shared);
@@ -304,20 +308,33 @@ impl Collector {
                 .iter()
                 .map(|(k, (t, _))| (k.clone(), *t))
                 .collect();
-            let wedged: Vec<String> = {
+            let wedged: Vec<(String, String)> = {
                 let smp = shared.samples.lock().unwrap();
                 smp.iter()
                     .filter(|(k, v)| is_wedged(&v.status, v.ts, spawned.get(*k).copied(), now))
-                    .map(|(k, _)| k.clone())
+                    .map(|(k, v)| (k.clone(), v.error.clone()))
                     .collect()
             };
-            for name in wedged {
-                eprintln!(
-                    "{}   {}: silent for over {}s, restarting the stream",
-                    crate::stamp(),
-                    name,
-                    STALE_AFTER_SEC
-                );
+            for (name, why) in wedged {
+                // A stream that is sending blocks with no GPU rows in them is
+                // not silent, and saying so sent the last diagnosis looking
+                // for a hung process that did not exist.
+                if why.is_empty() {
+                    eprintln!(
+                        "{}   {}: silent for over {}s, restarting the stream",
+                        crate::stamp(),
+                        name,
+                        STALE_AFTER_SEC
+                    );
+                } else {
+                    eprintln!(
+                        "{}   {}: no GPU rows for over {}s ({}), restarting the stream",
+                        crate::stamp(),
+                        name,
+                        STALE_AFTER_SEC,
+                        why
+                    );
+                }
                 if let Some((_, c)) = shared.kids.lock().unwrap().get_mut(&name) {
                     let _ = c.kill();
                 }
@@ -470,6 +487,7 @@ impl Collector {
 
 fn worker(
     cfg: Arc<Config>,
+    cfg_path: Arc<std::path::PathBuf>,
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
     gate: Arc<Gate>,
@@ -499,6 +517,21 @@ fn worker(
                 // out, or had its key rejected.
                 eprintln!("{}   {}: {}", crate::stamp(), name, e);
                 set_state(&shared, &name, Status::Down, &e);
+                if needs_a_person(&e) {
+                    eprintln!(
+                        "{}   {}: not retrying until {} changes (re-provision the host)",
+                        crate::stamp(),
+                        name,
+                        cfg_path.display()
+                    );
+                    set_state(&shared, &name, Status::Down, "key rejected; waiting for re-provisioning");
+                    if !park_until_changed(&cfg_path, &stop) {
+                        return;
+                    }
+                    eprintln!("{}   {}: config changed, trying once more", crate::stamp(), name);
+                    fails = 0;
+                    continue;
+                }
             }
         }
         if stop.load(Ordering::SeqCst) {
@@ -521,6 +554,85 @@ fn worker(
             thread::sleep(Duration::from_secs(1));
         }
     }
+}
+
+/// Is this a failure that retrying cannot fix and only makes worse?
+///
+/// A rejected key is the dangerous one. Each attempt is a failed login in the
+/// server's auth log, which is exactly what fail2ban counts, and the backoff
+/// does not save us: once a host that used to work loses its authorized_keys
+/// (a replaced /home disk did it), five-minute retries ran for ten days and
+/// thousands of failures before anyone looked. Nothing on this side can fix
+/// it; a person has to reinstall the key.
+///
+/// A changed host key is the same shape -- it never clears on its own -- and
+/// it is the one case where connecting again would be the wrong thing to want.
+pub fn needs_a_person(err: &str) -> bool {
+    err.contains("Permission denied (")
+        || err.contains("Too many authentication failures")
+        || err.contains("Host key verification failed")
+}
+
+/// Wait until the config file is rewritten. False if asked to stop first.
+///
+/// Re-provisioning a host rewrites servers.json (it records `provisioned`),
+/// so that is the signal that a retry might now succeed -- the worker comes
+/// back without the collector being restarted, which would cost a connection
+/// to every other server. A file that cannot be read counts as unchanged.
+fn park_until_changed(path: &std::path::Path, stop: &AtomicBool) -> bool {
+    let mtime = || std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let seen = mtime();
+    loop {
+        for _ in 0..5 {
+            if stop.load(Ordering::SeqCst) {
+                return false;
+            }
+            thread::sleep(Duration::from_secs(1));
+        }
+        let now = mtime();
+        if now.is_some() && now != seen {
+            return true;
+        }
+    }
+}
+
+/// Text in the `###GPU` section that is not a GPU row: nvidia-smi's own
+/// complaint, such as a card it cannot get a handle for. `None` if there is
+/// none.
+///
+/// One unreadable card listed in `-i` makes nvidia-smi print only the error
+/// and no rows for the healthy cards either, so the stream keeps sending
+/// blocks with nothing in them. This is the only place the reason shows up.
+pub fn gpu_errors(text: &str) -> Option<String> {
+    let mut in_gpu = false;
+    let mut errs: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if let Some(tag) = line.strip_prefix("###") {
+            in_gpu = tag.trim() == "GPU";
+            continue;
+        }
+        let line = line.trim();
+        if !in_gpu || line.is_empty() {
+            continue;
+        }
+        let p: Vec<&str> = line.split(',').collect();
+        let is_row = p.len() >= 10 && p[0].trim().parse::<u32>().is_ok();
+        if !is_row && !errs.contains(&line) {
+            errs.push(line);
+        }
+    }
+    if errs.is_empty() {
+        return None;
+    }
+    let mut s = errs.join(" | ");
+    if s.len() > 300 {
+        let mut cut = 300;
+        while !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
+    }
+    Some(s)
 }
 
 fn session(
@@ -551,6 +663,7 @@ fn session(
     let mut buf = String::new();
     let mut last_host: Option<Host> = None;
     let mut got_any = false;
+    let mut gpu_err: Option<String> = None;
 
     for line in reader.lines() {
         if stop.load(Ordering::SeqCst) {
@@ -566,13 +679,27 @@ fn session(
         };
         if line.trim() == "###END" {
             let (gpus, host, _) = parse_block(&buf);
+            let err = gpu_errors(&buf);
             buf.clear();
+            // Logged when it changes, not every second it persists.
+            if err != gpu_err {
+                match &err {
+                    Some(e) => eprintln!("{}   {}: nvidia-smi: {}", crate::stamp(), srv.name, e),
+                    None => eprintln!("{}   {}: nvidia-smi errors cleared", crate::stamp(), srv.name),
+                }
+                gpu_err = err;
+            }
             if let Some(h) = host {
                 last_host = Some(h);
             }
             if !gpus.is_empty() {
                 got_any = true;
                 commit(shared, &srv.name, gpus, last_host.clone());
+            } else if let Some(e) = &gpu_err {
+                // Status is left alone so the stall watchdog still restarts
+                // the stream -- a restart is what picks up an edited
+                // ~/.hil-gpus -- but it can now say why.
+                set_error(shared, &srv.name, &format!("nvidia-smi: {}", e));
             }
             continue;
         }
@@ -590,10 +717,19 @@ fn session(
         let _ = e.read_to_string(&mut err);
     }
     reap(shared, &srv.name);
+    // The remote complaint, if there was one, beats whatever ssh said last:
+    // after a watchdog kill that is only a line about the terminal.
+    if let Some(e) = gpu_err {
+        return Err(format!("nvidia-smi: {}", e));
+    }
     let msg = err
         .lines()
         .rev()
-        .find(|l| !l.trim().is_empty() && !l.contains("Pseudo-terminal"))
+        .find(|l| {
+            !l.trim().is_empty()
+                && !l.contains("Pseudo-terminal")
+                && !l.contains("PTY allocation request failed")
+        })
         .unwrap_or(if got_any { "stream ended" } else { "no data" })
         .to_string();
     Err(msg)
@@ -701,6 +837,12 @@ fn commit(shared: &Arc<Shared>, name: &str, gpus: Vec<Gpu>, host: Option<Host>) 
     );
 }
 
+fn set_error(shared: &Arc<Shared>, name: &str, err: &str) {
+    if let Some(x) = shared.samples.lock().unwrap().get_mut(name) {
+        x.error = err.to_string();
+    }
+}
+
 fn set_state(shared: &Arc<Shared>, name: &str, st: Status, err: &str) {
     let mut s = shared.samples.lock().unwrap();
     if let Some(x) = s.get_mut(name) {
@@ -795,6 +937,73 @@ Mem:  515000 312000 1200
         assert_eq!(gpus.len(), 1);
         assert!(host.is_none(), "caller must merge the last slow block");
         assert!(procs.is_none());
+    }
+
+    #[test]
+    fn a_card_nvidia_smi_cannot_open_is_reported() {
+        // What a server with one dead card actually sent: blocks keep arriving,
+        // with no rows in them.
+        let b = "###GPU\nUnable to determine the device handle for GPU0000:3D:00.0: Unknown Error\n";
+        let (gpus, _, _) = parse_block(b);
+        assert!(gpus.is_empty());
+        assert_eq!(
+            gpu_errors(b).as_deref(),
+            Some("Unable to determine the device handle for GPU0000:3D:00.0: Unknown Error")
+        );
+    }
+
+    #[test]
+    fn healthy_rows_and_other_sections_are_not_errors() {
+        assert_eq!(gpu_errors(BLOCK), None);
+        assert_eq!(gpu_errors("###GPU\n###END\n"), None);
+    }
+
+    #[test]
+    fn a_partial_failure_still_names_the_bad_card() {
+        let b = "###GPU\n0, X, GPU-a, 50, 1, 2, 10, 20, 30, 40\nUnable to determine the device handle for GPU0000:3F:00.0: Unknown Error\n";
+        assert_eq!(parse_block(b).0.len(), 1);
+        assert!(gpu_errors(b).unwrap().contains("3F:00.0"));
+    }
+
+    #[test]
+    fn a_rejected_key_is_not_retried() {
+        assert!(needs_a_person("sukim@10.0.0.1: Permission denied (publickey,password)."));
+        assert!(needs_a_person("Received disconnect: Too many authentication failures"));
+        assert!(needs_a_person("Host key verification failed."));
+    }
+
+    #[test]
+    fn ordinary_outages_keep_their_backoff() {
+        // A powered-off or rebooting host comes back by itself; parking it
+        // would leave it dark until someone touched servers.json.
+        for e in [
+            "ssh: connect to host 10.0.0.1 port 22: Connection timed out",
+            "ssh: connect to host 10.0.0.1 port 22: Connection refused",
+            "Connection to 10.0.0.1 closed.",
+            "stream ended",
+            "no data",
+            "nvidia-smi: Unable to determine the device handle for GPU0000:3D:00.0: Unknown Error",
+        ] {
+            assert!(!needs_a_person(e), "{}", e);
+        }
+    }
+
+    #[test]
+    fn a_parked_worker_wakes_when_the_config_is_rewritten() {
+        let p = std::env::temp_dir().join(format!("hilmon-park-{}.json", std::process::id()));
+        std::fs::write(&p, "{}").unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (p2, s2) = (p.clone(), Arc::clone(&stop));
+        let t = thread::spawn(move || park_until_changed(&p2, &s2));
+        thread::sleep(Duration::from_millis(1500));
+        // Some filesystems keep whole-second mtimes; make the change visible.
+        let later = std::time::SystemTime::now() + Duration::from_secs(10);
+        std::fs::File::options().write(true).open(&p).unwrap().set_modified(later).unwrap();
+        assert!(t.join().unwrap(), "should wake on the rewrite");
+
+        stop.store(true, Ordering::SeqCst);
+        assert!(!park_until_changed(&p, &stop), "should give up when stopping");
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]

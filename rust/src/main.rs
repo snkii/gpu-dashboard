@@ -236,7 +236,7 @@ fn main() {
         }
     };
 
-    let mut c = Collector::new(cfg, stats_dir(&args.config));
+    let mut c = Collector::new(cfg, stats_dir(&args.config), PathBuf::from(&args.config));
     c.start();
     let c = Arc::new(c);
 
