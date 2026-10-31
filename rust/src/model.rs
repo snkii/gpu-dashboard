@@ -22,11 +22,6 @@ pub struct Server {
     /// up is not the same thing as one that is down, and it is not the same
     /// thing as one we have hidden: people want to see that it is coming.
     pub preparing: bool,
-    /// Whether this host's watts belong in the lab's power picture. The B300
-    /// nodes draw 1100 W a card against 350 W for a 3090, and they are not on
-    /// the lab's own supply, so counting them would drown out every number
-    /// the power view exists to show.
-    pub count_power: bool,
     pub enabled: bool,
     pub pin_address: bool,
     pub note: String,
@@ -88,7 +83,6 @@ impl Config {
                 user: s.get("user").and_then(|x| x.as_str()).map(String::from),
                 identity: s.get("identity").and_then(|x| x.as_str()).map(String::from),
                 preparing: s.bool_or("preparing", false),
-                count_power: s.bool_or("power", true),
                 enabled: s.bool_or("enabled", true),
                 pin_address: pin,
                 note: s.str_or("note", "").to_string(),
@@ -497,16 +491,12 @@ fn write_server(w: &mut Writer, s: &Server, smp: &Sample, status: Status, public
         }
     }
 
-    // A host excluded from the power picture publishes no watts at all, so
-    // nothing downstream has to know about the exclusion: the briefing's
-    // total, the "which rack draws most" ranking and the card's own reading
-    // all simply have nothing to add up.
-    if let (true, Some(v)) = (s.count_power, smp.watts) {
+    if let Some(v) = smp.watts {
         w.raw(",");
         w.key("watts");
         w.num(v);
     }
-    if s.count_power && !smp.watt_history.is_empty() {
+    if !smp.watt_history.is_empty() {
         w.raw(",");
         w.key("watt_history");
         w.raw("[");
@@ -625,7 +615,6 @@ mod tests {
             identity: None,
             enabled: true,
             preparing: false,
-            count_power: true,
             pin_address: false,
             note: "출입문 비번 1234".into(),
         }
@@ -696,26 +685,6 @@ mod tests {
         let t = v.get("summary").expect("summary");
         assert_eq!(t.num_or("servers_total", 0.0), 1.0, "{}", out);
         assert_eq!(t.num_or("servers_up", 0.0), 1.0, "{}", out);
-    }
-
-    #[test]
-    fn a_host_outside_the_power_picture_publishes_no_watts() {
-        // B300 cards draw 1100 W against a 3090's 350 W and are not on the
-        // lab's supply; publishing their draw would drown out the numbers the
-        // power view exists to show.
-        let mut node = srv("B300-1");
-        node.count_power = false;
-        let cfg = cfg_with(vec![node]);
-        let mut m = BTreeMap::new();
-        m.insert("B300-1".to_string(), ok_sample());
-        let out = write_snapshot(&cfg, &cfg.listed(), &m, true);
-        assert!(!out.contains("\"watts\""), "{}", out);
-        assert!(!out.contains("watt_history"), "{}", out);
-
-        // The same server with the flag on does publish them.
-        let cfg = cfg_with(vec![srv("B300-1")]);
-        let out = write_snapshot(&cfg, &cfg.listed(), &m, true);
-        assert!(out.contains("\"watts\""), "{}", out);
     }
 
     #[test]

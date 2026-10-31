@@ -699,7 +699,7 @@ fn session(
             }
             if !gpus.is_empty() {
                 got_any = true;
-                commit(shared, &srv.name, gpus, last_host.clone(), srv.count_power);
+                commit(shared, &srv.name, gpus, last_host.clone());
             } else if let Some(e) = &gpu_err {
                 // Status is left alone so the stall watchdog still restarts
                 // the stream -- a restart is what picks up an edited
@@ -776,13 +776,7 @@ fn reap(shared: &Arc<Shared>, name: &str) {
     }
 }
 
-fn commit(
-    shared: &Arc<Shared>,
-    name: &str,
-    gpus: Vec<Gpu>,
-    host: Option<Host>,
-    count_power: bool,
-) {
+fn commit(shared: &Arc<Shared>, name: &str, gpus: Vec<Gpu>, host: Option<Host>) {
     let watts: f64 = gpus.iter().filter_map(|g| g.power).sum();
     let has_power = gpus.iter().any(|g| g.power.is_some());
 
@@ -803,10 +797,7 @@ fn commit(
         let mem_tot: f64 = gpus.iter().filter_map(|g| g.mem_total).sum();
         let row = Row {
             ts: gate::now() as u32,
-            // Zero, not the real draw: a host outside the power picture must
-            // not appear in the history either, or the statistics view would
-            // disagree with every other number on the page.
-            watts: if count_power { watts.round().clamp(0.0, 65535.0) as u16 } else { 0 },
+            watts: watts.round().clamp(0.0, 65535.0) as u16,
             watt_cap: gpus.iter().filter_map(|g| g.power_limit).sum::<f64>()
                 .round().clamp(0.0, 65535.0) as u16,
             util_avg: (util_sum / n as f64).round().clamp(0.0, 100.0) as u8,
@@ -1034,7 +1025,7 @@ Mem:  515000 312000 1200
             user: None,
             identity: Some("~/.ssh/hil_monitor".into()),
             enabled: true, pin_address: false, note: String::new(),
-            preparing: false, count_power: true,
+            preparing: false,
         };
         let a = ssh_argv(&cfg, &s);
         assert!(a.contains(&"IdentitiesOnly=yes".to_string()));
@@ -1059,7 +1050,7 @@ Mem:  515000 312000 1200
             user: Some("hil".into()),
             identity: None,
             enabled: true, pin_address: false, note: String::new(),
-            preparing: false, count_power: true,
+            preparing: false,
         };
         assert_eq!(ssh_argv(&cfg, &s).last().unwrap(), "hil@h");
     }
