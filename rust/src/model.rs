@@ -13,6 +13,10 @@ pub struct Server {
     pub gpu_model: String,
     pub n_gpu: usize,
     pub loc: String,
+    /// Login for this host when it is not the config-wide `ssh_user`. The B300
+    /// nodes are shared with other groups and the account we are given there is
+    /// not the one we use on the lab's own machines.
+    pub user: Option<String>,
     pub identity: Option<String>,
     pub enabled: bool,
     pub pin_address: bool,
@@ -72,6 +76,7 @@ impl Config {
                 gpu_model: s.str_or("gpu", "").to_string(),
                 n_gpu: s.num_or("n_gpu", 0.0) as usize,
                 loc: s.str_or("loc", "").to_string(),
+                user: s.get("user").and_then(|x| x.as_str()).map(String::from),
                 identity: s.get("identity").and_then(|x| x.as_str()).map(String::from),
                 enabled: s.bool_or("enabled", true),
                 pin_address: pin,
@@ -118,10 +123,38 @@ impl Config {
     }
 
     pub fn active(&self) -> Vec<&Server> {
+        let fam = self.family_order();
         let mut v: Vec<&Server> = self.servers.iter().filter(|s| s.enabled).collect();
-        v.sort_by_key(|s| sort_key(&s.name));
+        v.sort_by_key(|s| {
+            let (n, name) = sort_key(&s.name);
+            (*fam.get(&family(&s.name)).unwrap_or(&usize::MAX), n, name)
+        });
         v
     }
+
+    /// Families in the order they first appear in servers.json.
+    ///
+    /// Sorting on the number alone put B300-1 after hi30, because it compares
+    /// 3001 with 30. Rather than add a sort field that nobody will remember to
+    /// set, the file's own order decides which family comes first and the
+    /// number keeps ordering the machines inside it.
+    fn family_order(&self) -> BTreeMap<String, usize> {
+        let mut m = BTreeMap::new();
+        for s in &self.servers {
+            let f = family(&s.name);
+            let next = m.len();
+            m.entry(f).or_insert(next);
+        }
+        m
+    }
+}
+
+/// The leading letters of a name: `hi14` -> `hi`, `B300-1` -> `b`.
+pub fn family(name: &str) -> String {
+    name.chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 /// hi9 must sort before hi14, so compare the numeric part first.
@@ -543,6 +576,7 @@ mod tests {
             gpu_model: "3090 24GB".into(),
             n_gpu: 1,
             loc: "301-207".into(),
+            user: None,
             identity: None,
             enabled: true,
             pin_address: false,
@@ -571,6 +605,42 @@ mod tests {
             watts: Some(249.5),
             watt_history: vec![100.0, 249.5],
         }
+    }
+
+    #[test]
+    fn families_sort_in_the_order_they_appear_in_the_file() {
+        // Sorting on the number alone puts B300-1 (3001) after hi30 (30).
+        // Listing the B300 nodes first in servers.json is what puts them first
+        // on the page; the number still orders the machines inside a family.
+        let cfg = Config {
+            ssh_user: "sukim".into(), public_mode: true,
+            min_gap: 2.5, window: 10.0, max_per_window: 5, connect_timeout: 6,
+            power_points: 120, power_log: false, stats_period: 10, stats_keep_days: 365,
+            servers: vec![srv("B300-2"), srv("B300-1"), srv("hi30"), srv("hi9")],
+            racks: vec![],
+        };
+        let got: Vec<&str> = cfg.active().iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(got, ["B300-1", "B300-2", "hi9", "hi30"]);
+    }
+
+    #[test]
+    fn a_family_listed_later_sorts_later() {
+        let cfg = Config {
+            ssh_user: "sukim".into(), public_mode: true,
+            min_gap: 2.5, window: 10.0, max_per_window: 5, connect_timeout: 6,
+            power_points: 120, power_log: false, stats_period: 10, stats_keep_days: 365,
+            servers: vec![srv("hi14"), srv("B300-1")],
+            racks: vec![],
+        };
+        let got: Vec<&str> = cfg.active().iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(got, ["hi14", "B300-1"]);
+    }
+
+    #[test]
+    fn family_is_the_leading_letters() {
+        assert_eq!(family("hi14"), "hi");
+        assert_eq!(family("B300-1"), "b");
+        assert_eq!(family("7"), "");
     }
 
     #[test]

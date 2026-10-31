@@ -46,7 +46,10 @@ pub fn ssh_argv(cfg: &Config, s: &Server) -> Vec<String> {
         v.push("-o".into());
         v.push("IdentitiesOnly=yes".into());
     }
-    v.push(format!("{}@{}", cfg.ssh_user, s.host));
+    // Per-host login wins: the B300 nodes are shared with other groups and
+    // the account there is not the one used on the lab's own machines.
+    let user = s.user.as_deref().unwrap_or(&cfg.ssh_user);
+    v.push(format!("{}@{}", user, s.host));
     v
 }
 
@@ -1017,6 +1020,7 @@ Mem:  515000 312000 1200
         let s = Server {
             name: "hi14".into(), host: "h".into(), port: 2222,
             gpu_model: String::new(), n_gpu: 1, loc: String::new(),
+            user: None,
             identity: Some("~/.ssh/hil_monitor".into()),
             enabled: true, pin_address: false, note: String::new(),
         };
@@ -1025,5 +1029,25 @@ Mem:  515000 312000 1200
         assert!(a.iter().any(|x| x.ends_with("hil_monitor")));
         assert!(a.contains(&"2222".to_string()));
         assert_eq!(a.last().unwrap(), "sukim@h");
+    }
+
+    #[test]
+    fn a_host_can_override_the_login() {
+        // The B300 nodes are shared with other groups; the account there
+        // is not the one used on the lab's own machines.
+        let cfg = Config {
+            ssh_user: "sukim".into(), public_mode: true,
+            min_gap: 2.5, window: 10.0, max_per_window: 5, connect_timeout: 6,
+            power_points: 10, power_log: false, stats_period: 10, stats_keep_days: 365,
+            servers: vec![], racks: vec![],
+        };
+        let s = Server {
+            name: "B300-1".into(), host: "h".into(), port: 22,
+            gpu_model: String::new(), n_gpu: 8, loc: String::new(),
+            user: Some("hil".into()),
+            identity: None,
+            enabled: true, pin_address: false, note: String::new(),
+        };
+        assert_eq!(ssh_argv(&cfg, &s).last().unwrap(), "hil@h");
     }
 }
