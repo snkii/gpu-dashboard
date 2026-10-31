@@ -18,6 +18,15 @@ pub struct Server {
     /// not the one we use on the lab's own machines.
     pub user: Option<String>,
     pub identity: Option<String>,
+    /// Listed on the page but never connected to. A machine that is being set
+    /// up is not the same thing as one that is down, and it is not the same
+    /// thing as one we have hidden: people want to see that it is coming.
+    pub preparing: bool,
+    /// Whether this host's watts belong in the lab's power picture. The B300
+    /// nodes draw 1100 W a card against 350 W for a 3090, and they are not on
+    /// the lab's own supply, so counting them would drown out every number
+    /// the power view exists to show.
+    pub count_power: bool,
     pub enabled: bool,
     pub pin_address: bool,
     pub note: String,
@@ -78,6 +87,8 @@ impl Config {
                 loc: s.str_or("loc", "").to_string(),
                 user: s.get("user").and_then(|x| x.as_str()).map(String::from),
                 identity: s.get("identity").and_then(|x| x.as_str()).map(String::from),
+                preparing: s.bool_or("preparing", false),
+                count_power: s.bool_or("power", true),
                 enabled: s.bool_or("enabled", true),
                 pin_address: pin,
                 note: s.str_or("note", "").to_string(),
@@ -122,9 +133,19 @@ impl Config {
         })
     }
 
+    /// Hosts to connect to.
     pub fn active(&self) -> Vec<&Server> {
+        self.sorted(|s| s.enabled)
+    }
+
+    /// Hosts to show, which includes the ones still being set up.
+    pub fn listed(&self) -> Vec<&Server> {
+        self.sorted(|s| s.enabled || s.preparing)
+    }
+
+    fn sorted(&self, keep: impl Fn(&Server) -> bool) -> Vec<&Server> {
         let fam = self.family_order();
-        let mut v: Vec<&Server> = self.servers.iter().filter(|s| s.enabled).collect();
+        let mut v: Vec<&Server> = self.servers.iter().filter(|s| keep(s)).collect();
         v.sort_by_key(|s| {
             let (n, name) = sort_key(&s.name);
             (*fam.get(&family(&s.name)).unwrap_or(&usize::MAX), n, name)
@@ -196,6 +217,8 @@ pub enum Status {
     NoGpu,
     /// Connected, but the far side stopped talking. See `STALE_AFTER_SEC`.
     Stale,
+    /// Not connected to at all yet -- the host is still being set up.
+    Setup,
 }
 
 /// How long a sample may go without advancing before it stops counting as live.
@@ -226,6 +249,7 @@ impl Status {
             Status::Down => "down",
             Status::NoGpu => "nogpu",
             Status::Stale => "stale",
+            Status::Setup => "setup",
         }
     }
 }
@@ -286,6 +310,11 @@ pub fn write_snapshot(
     let now = crate::gate::now() as u64;
 
     for s in order {
+        // A host still being set up has no data and is not expected to answer.
+        // Counting it would make "15/16" mean one server is in trouble.
+        if s.preparing {
+            continue;
+        }
         if let Some(smp) = samples.get(&s.name) {
             if smp.ts > 0 {
                 newest_any = Some(newest_any.map_or(smp.ts, |o: u64| o.max(smp.ts)));
@@ -343,7 +372,9 @@ pub fn write_snapshot(
     w.key("summary");
     w.raw("{");
     w.key("servers_total");
-    w.num(order.len() as f64);
+    // Not order.len(): the list now carries hosts that are only being shown,
+    // and "15 of 16" would read as one machine in trouble.
+    w.num(order.iter().filter(|s| !s.preparing).count() as f64);
     w.raw(",");
     w.key("servers_up");
     w.num(up as f64);
@@ -367,7 +398,12 @@ pub fn write_snapshot(
         }
         let d = Sample::default();
         let smp = samples.get(&s.name).unwrap_or(&d);
-        write_server(&mut w, s, smp, effective_status(smp, now), public);
+        let st = if s.preparing {
+            Status::Setup
+        } else {
+            effective_status(smp, now)
+        };
+        write_server(&mut w, s, smp, st, public);
     }
     w.raw("]");
 
@@ -416,14 +452,19 @@ fn write_server(w: &mut Writer, s: &Server, smp: &Sample, status: Status, public
         }
     }
 
-    if smp.status != Status::Ok {
+    // Keyed off the status being published, not the one on the sample. A host
+    // being set up carries a default sample that still says Pending, and
+    // "연결 중" on a machine nothing has dialled is simply untrue.
+    if status != Status::Ok {
         w.raw(",");
         w.key("error");
         if public {
             // An SSH error string echoes the host and port back, so the public
             // payload gets a fixed phrase per status instead.
-            w.str(match smp.status {
+            w.str(match status {
                 Status::Pending => "연결 중",
+                Status::Setup => "오픈 준비 중",
+                Status::Stale => "응답 지연",
                 Status::NoGpu => "no GPU reported",
                 _ => "unreachable",
             });
@@ -456,12 +497,16 @@ fn write_server(w: &mut Writer, s: &Server, smp: &Sample, status: Status, public
         }
     }
 
-    if let Some(v) = smp.watts {
+    // A host excluded from the power picture publishes no watts at all, so
+    // nothing downstream has to know about the exclusion: the briefing's
+    // total, the "which rack draws most" ranking and the card's own reading
+    // all simply have nothing to add up.
+    if let (true, Some(v)) = (s.count_power, smp.watts) {
         w.raw(",");
         w.key("watts");
         w.num(v);
     }
-    if !smp.watt_history.is_empty() {
+    if s.count_power && !smp.watt_history.is_empty() {
         w.raw(",");
         w.key("watt_history");
         w.raw("[");
@@ -579,6 +624,8 @@ mod tests {
             user: None,
             identity: None,
             enabled: true,
+            preparing: false,
+            count_power: true,
             pin_address: false,
             note: "출입문 비번 1234".into(),
         }
@@ -605,6 +652,70 @@ mod tests {
             watts: Some(249.5),
             watt_history: vec![100.0, 249.5],
         }
+    }
+
+    fn cfg_with(servers: Vec<Server>) -> Config {
+        Config {
+            ssh_user: "sukim".into(), public_mode: true,
+            min_gap: 2.5, window: 10.0, max_per_window: 5, connect_timeout: 6,
+            power_points: 120, power_log: false, stats_period: 10, stats_keep_days: 365,
+            servers, racks: vec![],
+        }
+    }
+
+    #[test]
+    fn a_host_being_set_up_is_shown_but_never_connected_to() {
+        let mut later = srv("B300-3");
+        later.enabled = false;
+        later.preparing = true;
+        let cfg = cfg_with(vec![srv("hi14"), later]);
+
+        assert_eq!(cfg.active().len(), 1, "the collector must not dial it");
+        assert_eq!(cfg.listed().len(), 2, "but the page must show it");
+
+        let mut m = BTreeMap::new();
+        m.insert("hi14".to_string(), ok_sample());
+        let out = write_snapshot(&cfg, &cfg.listed(), &m, true);
+        assert!(out.contains("\"setup\""), "{}", out);
+    }
+
+    #[test]
+    fn a_host_being_set_up_does_not_count_as_a_server_that_is_down() {
+        // Counting it would read as "15/16" -- one machine in trouble -- when
+        // nothing is wrong and the sixteenth simply is not open yet.
+        let mut later = srv("B300-3");
+        later.enabled = false;
+        later.preparing = true;
+        let cfg = cfg_with(vec![srv("hi14"), later]);
+        let mut m = BTreeMap::new();
+        let mut live = ok_sample();
+        live.ts = crate::gate::now() as u64;   // ok_sample is fixed in 2023
+        m.insert("hi14".to_string(), live);
+        let out = write_snapshot(&cfg, &cfg.listed(), &m, true);
+        let v = json::parse(&out).expect("valid json");
+        let t = v.get("summary").expect("summary");
+        assert_eq!(t.num_or("servers_total", 0.0), 1.0, "{}", out);
+        assert_eq!(t.num_or("servers_up", 0.0), 1.0, "{}", out);
+    }
+
+    #[test]
+    fn a_host_outside_the_power_picture_publishes_no_watts() {
+        // B300 cards draw 1100 W against a 3090's 350 W and are not on the
+        // lab's supply; publishing their draw would drown out the numbers the
+        // power view exists to show.
+        let mut node = srv("B300-1");
+        node.count_power = false;
+        let cfg = cfg_with(vec![node]);
+        let mut m = BTreeMap::new();
+        m.insert("B300-1".to_string(), ok_sample());
+        let out = write_snapshot(&cfg, &cfg.listed(), &m, true);
+        assert!(!out.contains("\"watts\""), "{}", out);
+        assert!(!out.contains("watt_history"), "{}", out);
+
+        // The same server with the flag on does publish them.
+        let cfg = cfg_with(vec![srv("B300-1")]);
+        let out = write_snapshot(&cfg, &cfg.listed(), &m, true);
+        assert!(out.contains("\"watts\""), "{}", out);
     }
 
     #[test]

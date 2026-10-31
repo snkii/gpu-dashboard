@@ -647,12 +647,13 @@ function updateCard(c, s) {
 
   c.root.classList.toggle("offline", !up);
   var pending = s.status === "pending";
-  setAttr(c.badge, "s", pending ? "wait" : !up ? "down"
+  setAttr(c.badge, "s", pending || s.status === "setup" ? "wait" : !up ? "down"
     : (gpus.length && busy === gpus.length ? "busy" : "ok"));
   /* "지연" is not "DOWN": the host answers, its stream stopped. Saying DOWN
      would send someone to a machine that is running fine. */
   setText(c.badge, !up
-    ? (pending ? "대기" : s.status === "stale" ? "지연"
+    ? (pending ? "대기" : s.status === "setup" ? "준비중"
+       : s.status === "stale" ? "지연"
        : s.status === "timeout" ? "TIMEOUT"
        : s.status === "nogpu" ? "NO GPU" : "DOWN")
     : busy + " / " + gpus.length + " 사용중");
@@ -866,6 +867,7 @@ function updateRooms(byName) {
 
     if (!up) {
       setText(u.stat, s.status === "pending" ? "대기"
+        : s.status === "setup" ? "준비중"
         : s.status === "stale" ? "지연"
         : s.status === "timeout" ? "TIMEOUT" : "DOWN");
       var n = s.n_gpu_expected || 0;
@@ -1035,7 +1037,8 @@ function render() {
   // The down tab only exists while something is actually down.
   // pending is "not yet polled", not a fault.
   var nDown = servers.filter(function (s) {
-    return s.status !== "ok" && s.status !== "pending";
+    /* A host that is not open yet is not a fault. */
+    return s.status !== "ok" && s.status !== "pending" && s.status !== "setup";
   }).length;
   var dtab = $("tab-down");
   setText(dtab, "응답없음 " + nDown);
@@ -1047,7 +1050,8 @@ function render() {
     servers.forEach(function (s) {
       var c = CARDS.get(s.name);
       if (!c) { c = makeCard(s); CARDS.set(s.name, c); }
-      var vis = TAB === "srv" || (s.status !== "ok" && s.status !== "pending");
+      var vis = TAB === "srv"
+        || (s.status !== "ok" && s.status !== "pending" && s.status !== "setup");
       c.root.classList.toggle("hide", !vis);
       if (vis) { visible.push(s); updateCard(c, s); }
     });

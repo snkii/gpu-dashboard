@@ -362,9 +362,18 @@ pub fn digest_with_trend(snapshot: &str, trend: Option<(f64, u32)>) -> Option<St
     let mut rebooted: Vec<String> = Vec::new();
     let (mut tot, mut busy, mut watts) = (0usize, 0usize, 0.0f64);
 
+    let mut listed = 0usize;
     for s in servers {
         let name = s.str_or("name", "?");
-        if s.str_or("status", "") != "ok" {
+        let status = s.str_or("status", "");
+        // A host still being set up is not part of the fleet yet. Counting it
+        // made the briefing announce it as unreachable alongside a server that
+        // genuinely was.
+        if status == "setup" {
+            continue;
+        }
+        listed += 1;
+        if status != "ok" {
             down.push(name.to_string());
             continue;
         }
@@ -466,7 +475,7 @@ pub fn digest_with_trend(snapshot: &str, trend: Option<(f64, u32)>) -> Option<St
         "전체 규모: GPU {}대 중 {}대 사용 중, 서버 {}대 중 {}대 응답",
         tot,
         busy,
-        lines.len() + down.len(),
+        listed,
         lines.len()
     );
     for a in &alerts {
@@ -705,6 +714,42 @@ mod tests {
             assert!(!d.contains(banned), "digest leaked spare capacity ({}):\n{}", banned, d);
         }
         assert!(d.contains("전체 규모: GPU 2대 중 1대 사용 중"), "{}", d);
+    }
+
+    #[test]
+    fn a_host_being_set_up_is_not_announced_as_unreachable() {
+        // It went out as "B300-3 and hi22 are not responding, 14 of 16
+        // answering" when nothing had ever dialled B300-3 and only hi22 was
+        // actually in trouble.
+        let snap = r#"{"servers":[
+            {"name":"g1","status":"ok","gpu_model":"x","loc":"roomA","watts":120,
+             "gpus":[{"util":10,"mem_used":100,"mem_total":24000,"temp":40,"power_limit":350,"fan":30}]},
+            {"name":"new1","status":"setup","gpu_model":"x","loc":"roomB"}
+        ]}"#;
+        let d = digest(snap).unwrap();
+        assert!(d.contains("서버 1대 중 1대 응답"), "{}", d);
+        assert!(!d.contains("new1"), "a host being set up must not be listed:
+{}", d);
+    }
+
+    #[test]
+    fn a_host_outside_the_power_picture_adds_nothing_to_the_total() {
+        // B300 publishes no watts at all, so the briefing's total and its
+        // "draws the most" ranking simply have nothing to add up.
+        let snap = r#"{"servers":[
+            {"name":"g1","status":"ok","gpu_model":"x","loc":"roomA","watts":120,
+             "gpus":[{"util":0,"mem_used":100,"mem_total":24000,"temp":40,"power_limit":350,"fan":30}]},
+            {"name":"b1","status":"ok","gpu_model":"B300","loc":"B300",
+             "gpus":[{"util":99,"mem_used":222000,"mem_total":275040,"temp":60,"power_limit":1100,"fan":0}]}
+        ]}"#;
+        let d = digest(snap).unwrap();
+        // g1 is idle (util 10 would have counted as busy), b1 is the one in use.
+        // The ranking names g1 at 120 W, not the node pulling far more.
+        assert!(d.contains("g1이 120 W"), "ranking must ignore it:
+{}", d);
+        assert!(!d.contains("b1이"), "{}", d);
+        // Its GPUs still count -- only the power is excluded.
+        assert!(d.contains("GPU 2대 중 1대 사용 중"), "{}", d);
     }
 
     #[test]
