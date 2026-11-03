@@ -370,6 +370,30 @@
   @media (min-width: 1040px) { .sgridr { grid-template-columns: repeat(4, 1fr); } }
   /* Laid out by the same columnize() as the server grid. */
 
+  /* ---- custom rack ---- */
+  .cubar { display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+           margin-bottom: 10px; }
+  .cusum { margin-right: auto; font-size: 11.5px; color: var(--fg4); }
+  .cupick { background: var(--bg0h); border: 1px solid var(--bg2);
+            border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; }
+  .curow { display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+           padding: 7px 10px; }
+  .curow + .curow { border-top: 1px solid var(--bg1); }
+  .cuname { font: inherit; font-size: 12px; font-weight: 700; flex: none;
+            min-width: 76px; padding: 4px 9px; text-align: left; color: var(--fg2);
+            background: var(--bg1); border: 1px solid var(--bg2); border-radius: 6px;
+            cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .cuname[aria-pressed="true"] { color: var(--blue); border-color: var(--blue-b); }
+  .cumodel { flex: 1 1 80px; min-width: 0; font-size: 10.5px; color: var(--fg4);
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cchips { display: flex; gap: 4px; flex-wrap: wrap; }
+  .cchip { font: inherit; font-size: 11px; font-weight: 700; width: 27px; height: 27px;
+           padding: 0; color: var(--fg3); background: var(--bg0h);
+           border: 1px solid var(--bg2); border-radius: 6px; cursor: pointer;
+           -webkit-tap-highlight-color: transparent; }
+  .cchip[aria-pressed="true"] { background: var(--blue-b); border-color: var(--blue-b);
+                                color: var(--bg0); }
+
   .legend { display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
             margin: 12px 2px 0; font-size: 10.5px; color: var(--fg4); }
   .lgi { display: flex; align-items: center; gap: 4px; }
@@ -409,6 +433,7 @@
       <button class="tab" role="tab" data-tab="srv" aria-selected="true">서버</button>
       <button class="tab" role="tab" data-tab="loc" aria-selected="false">랙</button>
       <button class="tab" role="tab" data-tab="stat" aria-selected="false">통계</button>
+      <button class="tab" role="tab" data-tab="cust" aria-selected="false">커스텀</button>
       <button class="tab alert hide" role="tab" data-tab="down" aria-selected="false"
               id="tab-down"></button>
     </div>
@@ -459,6 +484,23 @@
     <div class="empty" id="st-boot"><div class="spin"></div>통계를 불러오는 중…</div>
   </div>
 
+  <!-- Custom rack: the viewer's own pick of GPUs, drawn with the same cards as
+       the server view. The pick lives in localStorage next to the pins -- every
+       viewer is served identical bytes, and which GPUs you watch is a fact
+       about you, not about the fleet. -->
+  <div id="view-cust" class="hide">
+    <div class="cubar">
+      <button class="seg" id="cu-edit" type="button" aria-pressed="false">GPU 고르기</button>
+      <span class="cusum" id="cu-sum"></span>
+      <button class="seg hide" id="cu-clear" type="button">전체 해제</button>
+    </div>
+    <div class="cupick hide" id="cu-pick"></div>
+    <div class="grid hide" id="cu-grid"></div>
+    <div class="empty hide" id="cu-none">
+      고른 GPU가 없습니다. <b>GPU 고르기</b>로 원하는 카드를 담으세요.
+    </div>
+  </div>
+
   <footer id="foot"></footer>
 </div>
 
@@ -487,6 +529,22 @@ try {
 function savePins() {
   try {
     localStorage.setItem("hilgpu.pins", Array.from(PINS).join(","));
+  } catch (e) {}
+}
+
+/* The viewer's own pick of GPUs, as "hi20#0,hi29#3". Kept beside the pins and
+   for the same reason: it is one person's reading list, not fleet data. */
+var CUSTOM = new Set(), CCARDS = new Map(), CUST_SIG = "", PICK_SIG = "";
+var PICK_OPEN = false;
+try {
+  (localStorage.getItem("hilgpu.custom") || "").split(",").forEach(function (k) {
+    if (/^[^#,]+#\d+$/.test(k)) CUSTOM.add(k);
+  });
+} catch (e) {}
+
+function saveCustom() {
+  try {
+    localStorage.setItem("hilgpu.custom", Array.from(CUSTOM).join(","));
   } catch (e) {}
 }
 
@@ -583,20 +641,25 @@ function makeBar(parent, label) {
 }
 
 /* ---------------- server cards ---------------- */
-function makeCard(s) {
+/* `custom` builds the same card for the custom rack, minus the pin: that view
+   has a fixed order, so there is nothing for a pin to do there. */
+function makeCard(s, custom) {
   var card = el("div", "card");
-  if (PINS.has(s.name)) card.classList.add("pinned");
+  if (!custom && PINS.has(s.name)) card.classList.add("pinned");
   var head = el("div", "chead", card);
   el("span", "name", head).textContent = s.name;
   el("span", "model", head).textContent =
     s.gpu_model + " ×" + (s.n_gpu_expected || (s.gpus || []).length);
-  var pin = el("button", "pin", head);
-  pin.type = "button";
-  pin.setAttribute("aria-pressed", String(PINS.has(s.name)));
-  pin.title = PINS.has(s.name) ? "상단 고정 해제" : "상단에 고정";
-  pin.setAttribute("aria-label", s.name + " 상단 고정");
-  pin.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.6.6a1 1 0 0 0-1.5 1.3l.2.2-3 2.2-2.4-.3a1 1 0 0 0-.8 1.7l3 3-3.5 4.7a.5.5 0 0 0 .7.7L7 10.6l3 3a1 1 0 0 0 1.7-.8l-.3-2.4 2.2-3 .2.2a1 1 0 0 0 1.3-1.5z"/></svg>';
-  pin.addEventListener("click", function () { togglePin(s.name); });
+  var pin = null;
+  if (!custom) {
+    pin = el("button", "pin", head);
+    pin.type = "button";
+    pin.setAttribute("aria-pressed", String(PINS.has(s.name)));
+    pin.title = PINS.has(s.name) ? "상단 고정 해제" : "상단에 고정";
+    pin.setAttribute("aria-label", s.name + " 상단 고정");
+    pin.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.6.6a1 1 0 0 0-1.5 1.3l.2.2-3 2.2-2.4-.3a1 1 0 0 0-.8 1.7l3 3-3.5 4.7a.5.5 0 0 0 .7.7L7 10.6l3 3a1 1 0 0 0 1.7-.8l-.3-2.4 2.2-3 .2.2a1 1 0 0 0 1.3-1.5z"/></svg>';
+    pin.addEventListener("click", function () { togglePin(s.name); });
+  }
 
   var badge = el("span", "badge", head);
 
@@ -617,7 +680,7 @@ function makeCard(s) {
 
   var sub = el("div", "sub", card);
   var subSpans = [];
-  for (var i = 0; i < 5; i++) subSpans.push(el("span", null, sub));
+  for (var i = 0; i < 6; i++) subSpans.push(el("span", null, sub));
   var gwrap = el("div", "gpus", card);
   var err = el("div", "err hide", card);
 
@@ -659,6 +722,15 @@ function updateCard(c, s) {
     : busy + " / " + gpus.length + " 사용중");
 
   var f = [];
+  /* A card showing only some of a box's GPUs says so, and carries that
+     subset's own draw -- the header figure beside it counts the whole box. */
+  if (s.__part) {
+    var pw = 0, anyW = false;
+    for (var q = 0; q < gpus.length; q++) {
+      if (gpus[q].power != null) { pw += gpus[q].power; anyW = true; }
+    }
+    f.push("선택 " + s.__sel + "장" + (anyW ? " · " + Math.round(pw) + " W" : ""));
+  }
   if (s.loc) f.push(s.loc);
   if (up) {
     if (s.load1 != null && s.nproc) f.push("load " + s.load1.toFixed(1) + "/" + s.nproc);
@@ -990,6 +1062,151 @@ $("jump").addEventListener("click", function (ev) {
   if (b) jumpTo(b.dataset.go);
 });
 
+/* ---------------- custom rack ----------------
+   The pick is per GPU, the order is not: cards come out in fleet order with
+   GPU indexes ascending, the same order as every other view, so a card is
+   where you expect it without anyone having to arrange anything. */
+
+/* Fold the pick into one derived server per box, holding only the chosen
+   GPUs. The snapshot already arrives in fleet order, so nothing is sorted
+   here beyond the indexes inside a box. */
+function customSets(servers) {
+  var out = [];
+  servers.forEach(function (s) {
+    var n = s.n_gpu_expected || (s.gpus || []).length, want = {}, sel = 0, i;
+    for (i = 0; i < n; i++) {
+      if (CUSTOM.has(s.name + "#" + i)) { want[i] = 1; sel++; }
+    }
+    if (!sel) return;
+    var o = {};
+    for (var k in s) if (Object.prototype.hasOwnProperty.call(s, k)) o[k] = s[k];
+    o.gpus = (s.gpus || []).filter(function (g) { return want[g.index]; })
+      .sort(function (a, b) { return a.index - b.index; });
+    o.n_gpu_expected = sel;
+    o.__sel = sel;
+    o.__part = sel < n;
+    // A partial pick cannot honestly wear the whole box's power trace.
+    if (o.__part) o.watt_history = null;
+    out.push(o);
+  });
+  return out;
+}
+
+function renderCustom(servers) {
+  var sets = customSets(servers), nodes = [];
+  var keep = {};
+  sets.forEach(function (o) { keep[o.name] = 1; });
+  CCARDS.forEach(function (c, name) {
+    if (!keep[name]) { c.root.remove(); CCARDS.delete(name); }
+  });
+
+  var nG = 0, busy = 0, watts = 0, anyW = false;
+  sets.forEach(function (o) {
+    var c = CCARDS.get(o.name);
+    /* makeCard fixes its GPU rows at build time, so a box that was DOWN and
+       came back -- or a changed pick -- needs the card built again. */
+    if (c && c.__n !== o.gpus.length) { c.root.remove(); CCARDS.delete(o.name); c = null; }
+    if (!c) { c = makeCard(o, true); c.__n = o.gpus.length; CCARDS.set(o.name, c); }
+    updateCard(c, o);
+    nodes.push(c.root);
+    nG += o.__sel;
+    o.gpus.forEach(function (g) {
+      if (isBusy(g)) busy++;
+      if (g.power != null) { watts += g.power; anyW = true; }
+    });
+  });
+
+  var cols = gridCols();
+  var sig = cols + "|" + sets.map(function (o) { return o.name + ":" + o.gpus.length; }).join(",");
+  if (sig !== CUST_SIG) { CUST_SIG = sig; columnize($("cu-grid"), nodes, cols); }
+
+  $("cu-grid").classList.toggle("hide", !sets.length);
+  $("cu-none").classList.toggle("hide", sets.length !== 0 || PICK_OPEN);
+  $("cu-clear").classList.toggle("hide", CUSTOM.size === 0);
+  setText($("cu-sum"), nG
+    ? "GPU " + nG + "장 · " + busy + "장 사용중" + (anyW ? " · " + Math.round(watts) + " W" : "")
+    : "");
+}
+
+/* The picker is a row per box: the name toggles the whole box, the numbered
+   chips toggle one card each. Rebuilt only when the fleet itself changes. */
+function buildPicker(servers) {
+  var sig = servers.map(function (s) {
+    return s.name + ":" + (s.n_gpu_expected || (s.gpus || []).length);
+  }).join(",");
+  if (sig === PICK_SIG) return;
+  PICK_SIG = sig;
+  var host = $("cu-pick");
+  host.textContent = "";
+  servers.forEach(function (s) {
+    var n = s.n_gpu_expected || (s.gpus || []).length;
+    if (!n) return;
+    var row = el("div", "curow", host);
+    var all = el("button", "cuname", row);
+    all.type = "button";
+    all.dataset.all = s.name;
+    all.dataset.n = String(n);
+    all.textContent = s.name;
+    all.title = s.name + " 전체 담기/빼기";
+    el("span", "cumodel", row).textContent = s.gpu_model;
+    var chips = el("div", "cchips", row);
+    for (var i = 0; i < n; i++) {
+      var b = el("button", "cchip", chips);
+      b.type = "button";
+      b.dataset.k = s.name + "#" + i;
+      b.textContent = String(i);
+      b.title = s.name + " GPU " + i;
+    }
+  });
+  syncPicker();
+}
+
+function syncPicker() {
+  var host = $("cu-pick");
+  [].forEach.call(host.querySelectorAll(".cchip"), function (b) {
+    b.setAttribute("aria-pressed", String(CUSTOM.has(b.dataset.k)));
+  });
+  [].forEach.call(host.querySelectorAll(".cuname"), function (b) {
+    b.setAttribute("aria-pressed", String(boxPicked(b.dataset.all, +b.dataset.n) === +b.dataset.n));
+  });
+}
+
+function boxPicked(name, n) {
+  var on = 0;
+  for (var i = 0; i < n; i++) if (CUSTOM.has(name + "#" + i)) on++;
+  return on;
+}
+
+function setPick(open, redraw) {
+  PICK_OPEN = open;
+  $("cu-pick").classList.toggle("hide", !open);
+  $("cu-edit").setAttribute("aria-pressed", String(open));
+  if (redraw) render();
+}
+
+$("cu-pick").addEventListener("click", function (ev) {
+  var c = ev.target.closest(".cchip");
+  if (c) {
+    if (CUSTOM.has(c.dataset.k)) CUSTOM.delete(c.dataset.k); else CUSTOM.add(c.dataset.k);
+  } else {
+    var a = ev.target.closest(".cuname");
+    if (!a) return;
+    var n = +a.dataset.n, drop = boxPicked(a.dataset.all, n) === n, i;
+    for (i = 0; i < n; i++) {
+      var k = a.dataset.all + "#" + i;
+      if (drop) CUSTOM.delete(k); else CUSTOM.add(k);
+    }
+  }
+  saveCustom(); syncPicker(); render();
+});
+
+$("cu-edit").addEventListener("click", function () { setPick(!PICK_OPEN, true); });
+
+$("cu-clear").addEventListener("click", function () {
+  if (!CUSTOM.size) return;
+  CUSTOM.clear(); saveCustom(); syncPicker(); render();
+});
+
 /* ---------------- shared ---------------- */
 function render() {
   var d = LAST;
@@ -1060,6 +1277,9 @@ function render() {
     layoutCards(visible);
     grid.classList.toggle("hide", visible.length === 0);
     $("none").classList.toggle("hide", visible.length !== 0);
+  } else if (TAB === "cust") {
+    buildPicker(servers);
+    renderCustom(servers);
   } else {
     if (!ROOMS_BUILT) buildRooms(d.racks || []);
     var byName = {};
@@ -1505,11 +1725,15 @@ function setTab(t) {
   [].forEach.call(document.querySelectorAll(".tab"), function (b) {
     b.setAttribute("aria-selected", String(b.dataset.tab === t));
   });
-  $("view-srv").classList.toggle("hide", t === "loc" || t === "stat");
+  $("view-srv").classList.toggle("hide", t !== "srv" && t !== "down");
   $("view-loc").classList.toggle("hide", t !== "loc");
   $("view-stat").classList.toggle("hide", t !== "stat");
+  $("view-cust").classList.toggle("hide", t !== "cust");
   try { localStorage.setItem("hilgpu.tab", t); } catch (e) {}
   if (t === "stat") loadStats(false);
+  // Arriving at an empty custom rack, open the picker: an empty page with a
+  // button on it is a worse first move than the thing the button opens.
+  if (t === "cust" && !CUSTOM.size) setPick(true, false);
   render();
 }
 
@@ -1528,7 +1752,7 @@ document.querySelector(".tabs").addEventListener("click", function (ev) {
 var savedTab = "srv", savedTheme = "dark";
 try {
   // never restore into "down": that tab only exists while something is down
-  savedTab = { loc: "loc", stat: "stat" }[localStorage.getItem("hilgpu.tab")] || "srv";
+  savedTab = { loc: "loc", stat: "stat", cust: "cust" }[localStorage.getItem("hilgpu.tab")] || "srv";
   ST_RANGE = { "6h": 1, "24h": 1, "7d": 1, all: 1 }[localStorage.getItem("hilgpu.strange")]
               ? localStorage.getItem("hilgpu.strange") : "6h";
   ST_METRIC = METRICS[localStorage.getItem("hilgpu.smetric")] ? localStorage.getItem("hilgpu.smetric") : "w";
