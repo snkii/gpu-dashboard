@@ -36,6 +36,12 @@ pub struct Summarizer {
     /// Total draw and time at the last successful briefing, for the "since
     /// last time" figure. One float is the entire trend mechanism.
     last: Option<(f64, u32)>,
+    /// Each host's uptime at the last successful briefing. A reading that has
+    /// gone backwards since then is a reboot; an absolute uptime is not.
+    /// Empty after a collector restart, which costs one briefing's worth of
+    /// reboot detection and is the right way round: saying nothing beats
+    /// announcing a reboot that did not interrupt anybody.
+    last_up: BTreeMap<String, f64>,
 }
 
 impl Summarizer {
@@ -49,6 +55,7 @@ impl Summarizer {
             ts: 0,
             failures: 0,
             last: None,
+            last_up: BTreeMap::new(),
         }
     }
 
@@ -101,7 +108,8 @@ impl Summarizer {
         let trend = self
             .last
             .map(|(w, then)| (w, ((now.saturating_sub(then)) as f64 / 60.0).round() as u32));
-        let facts = match digest_with_trend(snapshot, trend) {
+        let prev_up = if self.last_up.is_empty() { None } else { Some(&self.last_up) };
+        let facts = match digest_with_history(snapshot, trend, prev_up) {
             Some(f) => f,
             None => return false,
         };
@@ -117,6 +125,10 @@ impl Summarizer {
                 if let Some(w) = total_watts(snapshot) {
                     self.last = Some((w, now));
                 }
+                /* Merged, not replaced. A host that was down this time keeps
+                   the uptime it last reported, so coming back up still reads
+                   as the reboot it was. */
+                self.last_up.extend(uptimes(snapshot));
                 changed
             }
             Err(e) => {
@@ -343,9 +355,44 @@ pub fn total_watts(snapshot: &str) -> Option<f64> {
     )
 }
 
+/// Each responding host's uptime, to compare against at the next briefing.
+pub fn uptimes(snapshot: &str) -> BTreeMap<String, f64> {
+    let mut m = BTreeMap::new();
+    if let Ok(v) = json::parse(snapshot.trim_start_matches('\u{feff}')) {
+        if let Some(servers) = v.get("servers").and_then(|s| s.as_arr()) {
+            for s in servers {
+                let up = s.num_or("uptime_sec", 0.0);
+                if s.str_or("status", "") == "ok" && up > 0.0 {
+                    m.insert(s.str_or("name", "?").to_string(), up);
+                }
+            }
+        }
+    }
+    m
+}
+
+/// How long ago the box came up, said the way a person would.
+fn since_boot(up: f64) -> String {
+    if up < 3600.0 {
+        format!("{}분 전", (up / 60.0).round().max(1.0) as i64)
+    } else {
+        format!("{}시간 전", (up / 3600.0).round() as i64)
+    }
+}
+
 /// As `digest`, plus what the total draw was at the previous briefing and how
 /// many minutes ago that was.
 pub fn digest_with_trend(snapshot: &str, trend: Option<(f64, u32)>) -> Option<String> {
+    digest_with_history(snapshot, trend, None)
+}
+
+/// As `digest_with_trend`, plus each host's uptime at the previous briefing,
+/// which is what makes a reboot observable rather than guessed at.
+pub fn digest_with_history(
+    snapshot: &str,
+    trend: Option<(f64, u32)>,
+    prev_up: Option<&BTreeMap<String, f64>>,
+) -> Option<String> {
     // Strip a byte-order mark. The collector never writes one, but this also
     // reads snapshots off disk, and anything edited on Windows may carry one.
     let v = json::parse(snapshot.trim_start_matches('\u{feff}')).ok()?;
@@ -416,9 +463,21 @@ pub fn digest_with_trend(snapshot: &str, trend: Option<(f64, u32)>) -> Option<St
             // and at that point the fan is simply at its limit.
             fans_open.push(format!("{} {}%", name, fmax.min(100.0).round() as i64));
         }
+        /* A reboot is only news if we watched it happen.
+           This used to be "uptime under 24 hours", which says nothing about a
+           host the collector has only just met: the day the B300 nodes were
+           attached the briefing announced all three as rebooted three hours
+           ago, when nothing of ours had ever been running on them. Hosted
+           boxes that restart on someone else's schedule would say it again
+           every morning.
+           Uptime only ever climbs, so a drop against what this same host
+           reported at the last briefing is a restart actually observed -- and
+           that is the one that interrupted work we were watching. A host with
+           no previous reading (new, or the first briefing after a collector
+           restart) is not reported at all. */
         let up = s.num_or("uptime_sec", 0.0);
-        if up > 0.0 && up < 86_400.0 {
-            rebooted.push(format!("{} {}시간", name, (up / 3600.0).round() as i64));
+        if up > 0.0 && prev_up.is_some_and(|p| p.get(name).is_some_and(|&was| up < was)) {
+            rebooted.push(format!("{} {}", name, since_boot(up)));
         }
 
         if tmax >= TEMP_ALERT {
@@ -533,7 +592,7 @@ pub fn digest_with_trend(snapshot: &str, trend: Option<(f64, u32)>) -> Option<St
     }
     if !rebooted.is_empty() {
         out.push_str(&format!(
-            "- 24시간 안에 재부팅되어 실행 중이던 작업이 끊겼을 수 있음: {}\n",
+            "- 직전 브리핑 이후 재부팅되어 실행 중이던 작업이 끊겼을 수 있음: {}\n",
             rebooted.join(", ")
         ));
     }
@@ -714,6 +773,57 @@ mod tests {
             assert!(!d.contains(banned), "digest leaked spare capacity ({}):\n{}", banned, d);
         }
         assert!(d.contains("전체 규모: GPU 2대 중 1대 사용 중"), "{}", d);
+    }
+
+    /// Two hosts, both up well under a day. One is new to us, one was up for
+    /// three days at the last briefing.
+    fn reboot_snapshot() -> &'static str {
+        r#"{"servers":[
+            {"name":"B300-1","status":"ok","gpu_model":"x","loc":"B300","watts":120,"uptime_sec":10800,
+             "gpus":[{"util":10,"mem_used":100,"mem_total":24000,"temp":40,"power_limit":350,"fan":30}]},
+            {"name":"hi21","status":"ok","gpu_model":"x","loc":"roomA","watts":120,"uptime_sec":9000,
+             "gpus":[{"util":10,"mem_used":100,"mem_total":24000,"temp":40,"power_limit":350,"fan":30}]}
+        ]}"#
+    }
+
+    #[test]
+    fn a_host_we_just_met_is_not_announced_as_rebooted() {
+        // What it used to say on the day the B300 nodes were attached: all
+        // three "rebooted 3 hours ago", when nothing of ours had ever run on
+        // them. Low uptime is not evidence of an interruption.
+        let d = digest(reboot_snapshot()).unwrap();
+        assert!(!d.contains("재부팅"), "no history means nothing to report:\n{}", d);
+    }
+
+    #[test]
+    fn a_reboot_is_reported_only_when_the_uptime_went_backwards() {
+        let mut prev = BTreeMap::new();
+        prev.insert("B300-1".to_string(), 3600.0); // was 1h, now 3h: still up
+        prev.insert("hi21".to_string(), 259_200.0); // was 3d, now 2.5h: restarted
+        let d = digest_with_history(reboot_snapshot(), None, Some(&prev)).unwrap();
+        // B300-1 is named elsewhere in the digest -- it leads the power
+        // ranking -- so look at the reboot line itself, not the whole text.
+        let line = d
+            .lines()
+            .find(|l| l.contains("재부팅"))
+            .unwrap_or_else(|| panic!("no reboot line:\n{}", d));
+        assert!(line.contains("hi21 3시간 전"), "{}", line);
+        assert!(!line.contains("B300-1"), "a climbing uptime is not a reboot: {}", line);
+    }
+
+    #[test]
+    fn the_uptime_map_skips_hosts_that_did_not_answer() {
+        let snap = r#"{"servers":[
+            {"name":"up","status":"ok","uptime_sec":500},
+            {"name":"down","status":"timeout","uptime_sec":900},
+            {"name":"nouptime","status":"ok"}
+        ]}"#;
+        let m = uptimes(snap);
+        assert_eq!(m.get("up"), Some(&500.0));
+        // Keeping a down host's stale reading would make its return look like
+        // a reboot that never happened.
+        assert!(!m.contains_key("down"));
+        assert!(!m.contains_key("nouptime"));
     }
 
     #[test]
