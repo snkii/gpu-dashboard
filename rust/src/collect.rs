@@ -349,12 +349,12 @@ impl Collector {
         self.stop.store(true, Ordering::SeqCst);
     }
 
-    pub fn snapshot_json(&self, public: bool) -> String {
+    pub fn snapshot_json(&self, public: bool, cadence: Cadence) -> String {
         let samples = self.shared.samples.lock().unwrap();
         // listed(), not active(): the page shows hosts that are still being
         // set up, which the collector never connects to.
         let order = self.cfg.listed();
-        write_snapshot(&self.cfg, &order, &samples, public)
+        write_snapshot(&self.cfg, &order, &samples, public, cadence)
     }
 
     pub fn samples(&self) -> BTreeMap<String, Sample> {

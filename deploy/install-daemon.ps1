@@ -45,6 +45,15 @@ $Task   = "HILGPUWatchdog"
 
 # One call every ten minutes is 144 a day, comfortably inside the free tier's
 # daily cap while still being fresh enough for a sentence about a cluster.
+# Upload cadences. These are a bill, not a preference: every upload is one
+# Class A operation on R2, and the free tier is a million a month. At the old
+# two seconds status.json alone came to 1.34M, and the overage is charged in
+# whole millions -- $4.50 for 366k operations. Five seconds puts the three
+# files together at about 550k a month, a little over half the allowance, and
+# five-second-old GPU figures are not meaningfully staler than two.
+#   status 5s -> 536k/month   stats 300s -> 9k   summary 600s -> 4k
+$PublishInterval = 5
+$StatsInterval   = 300
 $SummaryInterval = 600
 $Dest   = "$($S.Remote):$($S.Bucket)"
 
@@ -95,10 +104,10 @@ rem that does not get the working directory it was registered with dies on
 rem "bin\servers.json: no such file". That happened once. Nothing else in this
 rem file depends on the working directory; now nothing does.
 "$Exe" --config "$Root\servers.json" --web "$Root\web" ^
-  --publish "$Out" --loop ^
+  --publish "$Out" --loop --publish-interval $PublishInterval ^
   --upload-cmd "$Bin\up-first.cmd" ^
   --upload-cmd-tick "$Bin\up-status.cmd" ^
-  --upload-cmd-stats "$Bin\up-stats.cmd" --stats-interval 60 ^
+  --upload-cmd-stats "$Bin\up-stats.cmd" --stats-interval $StatsInterval ^
   --upload-cmd-summary "$Bin\up-summary.cmd" --summary-interval $SummaryInterval ^
   >> "$Log" 2>&1
 "@

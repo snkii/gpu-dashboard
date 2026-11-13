@@ -22,7 +22,7 @@ mod model;
 mod power;
 
 use collect::Collector;
-use model::{gpu_is_busy, Config, Status};
+use model::{gpu_is_busy, Cadence, Config, Status};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -81,8 +81,8 @@ fn parse_args() -> Result<Args, String> {
         summary_once: None,
         summary_prompt: None,
         summary_timeout: 60,
-        stats_interval: 60,
-        interval: 2,
+        stats_interval: 300,
+        interval: 5,
         check: false,
         once: false,
         rate: false,
@@ -171,17 +171,17 @@ fn print_help() {
          --port N                 listen port (default 8899)\n\
          --bind ADDR              listen address (default 127.0.0.1)\n\
          --web DIR                directory holding index.html and icons/\n\
-         --publish-interval SEC   upload cadence with --loop (default 2)\n\
+         --publish-interval SEC   upload cadence with --loop (default 5)\n\
          --upload-cmd CMD         run in DIR after the FIRST publish\n\
          --upload-cmd-tick CMD    run in DIR on every later tick
 \
          --upload-cmd-stats CMD   run in DIR after each stats.json rewrite
 \
-         --stats-interval SEC     stats.json cadence (default 60)\n\
+         --stats-interval SEC     stats.json cadence (default 300)\n\
          --summary-key PATH       file holding a Gemini API key (default:\n\
                                   ~/.hilgpu/gemini.key; absent = feature off)\n\
          --summary-model NAME     Gemini model (default gemini-2.5-flash)\n\
-         --summary-interval SEC   summary.json cadence (default 300)\n\
+         --summary-interval SEC   summary.json cadence (default 600)\n\
          --upload-cmd-summary CMD run in DIR after each summary rewrite"
     );
 }
@@ -252,7 +252,7 @@ fn main() {
 
     if args.once {
         wait_for_first(&c, n, 45);
-        println!("{}", c.snapshot_json(public));
+        println!("{}", c.snapshot_json(public, cadence(&args)));
         return;
     }
 
@@ -429,6 +429,12 @@ fn write_atomic(dir: &str, name: &str, body: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, PathBuf::from(dir).join(name))
 }
 
+/// What the page is told about how often these files are refreshed, so it can
+/// poll at that rate rather than at a rate someone guessed.
+fn cadence(args: &Args) -> Cadence {
+    Cadence { publish_sec: args.interval, stats_sec: args.stats_interval }
+}
+
 fn run_publish(c: &Arc<Collector>, args: &Args, dir: &str, public: bool) {
     let _ = std::fs::create_dir_all(dir);
     let n = c.config().active().len();
@@ -458,7 +464,7 @@ fn run_publish(c: &Arc<Collector>, args: &Args, dir: &str, public: bool) {
     let mut last_prune = gate::now();
     loop {
         let t0 = std::time::Instant::now();
-        let body = c.snapshot_json(public);
+        let body = c.snapshot_json(public, cadence(args));
 
         if let Err(e) = write_atomic(dir, "status.json", body.as_bytes()) {
             eprintln!("publish error: {}", e);

@@ -113,7 +113,7 @@ impl Server {
                 return (c.body.clone(), c.etag.clone());
             }
         }
-        let body = self.collector.snapshot_json(self.public).into_bytes();
+        let body = self.collector.snapshot_json(self.public, crate::model::Cadence::default()).into_bytes();
         let etag = format!("\"{:x}\"", fnv1a(&body));
         let mut c = self.cache.lock().unwrap();
         c.body = body.clone();

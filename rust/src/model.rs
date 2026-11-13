@@ -281,11 +281,32 @@ pub fn gpu_is_busy(g: &Gpu) -> bool {
 ///
 /// `public` drops everything that identifies the network or a person. Unlike a
 /// front-end auth check, this cannot be bypassed: the bytes never exist.
+/// How often the published files are actually refreshed.
+///
+/// It goes into the snapshot so the page can poll at the rate the data
+/// changes instead of guessing. Every fetch is a billed read on the object
+/// store, so a 1 Hz poll of a file rewritten every five seconds spends five
+/// reads to learn something once.
+#[derive(Clone, Copy, Debug)]
+pub struct Cadence {
+    pub publish_sec: u64,
+    pub stats_sec: u64,
+}
+
+impl Default for Cadence {
+    /// What `--serve` offers: the snapshot is rendered per request, so it is
+    /// as current as the collector itself.
+    fn default() -> Cadence {
+        Cadence { publish_sec: 1, stats_sec: 60 }
+    }
+}
+
 pub fn write_snapshot(
     cfg: &Config,
     order: &[&Server],
     samples: &BTreeMap<String, Sample>,
     public: bool,
+    cadence: Cadence,
 ) -> String {
     let mut total = 0usize;
     let mut busy = 0usize;
@@ -334,7 +355,10 @@ pub fn write_snapshot(
     w.num(newest_live.or(newest_any).unwrap_or(0) as f64);
     w.raw(",");
     w.key("poll_interval_sec");
-    w.num(1.0);
+    w.num(cadence.publish_sec as f64);
+    w.raw(",");
+    w.key("stats_interval_sec");
+    w.num(cadence.stats_sec as f64);
 
     w.raw(",");
     w.key("racks");
@@ -664,7 +688,7 @@ mod tests {
 
         let mut m = BTreeMap::new();
         m.insert("hi14".to_string(), ok_sample());
-        let out = write_snapshot(&cfg, &cfg.listed(), &m, true);
+        let out = write_snapshot(&cfg, &cfg.listed(), &m, true, Cadence::default());
         assert!(out.contains("\"setup\""), "{}", out);
     }
 
@@ -680,7 +704,7 @@ mod tests {
         let mut live = ok_sample();
         live.ts = crate::gate::now() as u64;   // ok_sample is fixed in 2023
         m.insert("hi14".to_string(), live);
-        let out = write_snapshot(&cfg, &cfg.listed(), &m, true);
+        let out = write_snapshot(&cfg, &cfg.listed(), &m, true, Cadence::default());
         let v = json::parse(&out).expect("valid json");
         let t = v.get("summary").expect("summary");
         assert_eq!(t.num_or("servers_total", 0.0), 1.0, "{}", out);
@@ -734,7 +758,7 @@ mod tests {
         let order = cfg.active();
         let mut m = BTreeMap::new();
         m.insert("hi14".to_string(), ok_sample());
-        let out = write_snapshot(&cfg, &order, &m, true);
+        let out = write_snapshot(&cfg, &order, &m, true, Cadence::default());
 
         for needle in ["10.0.0.1", "\"host\"", "\"port\"", "\"note\"", "1234", "sukim"] {
             assert!(!out.contains(needle), "leaked {:?} in {}", needle, out);
@@ -742,6 +766,27 @@ mod tests {
         assert!(out.contains("\"redacted\":true"));
         assert!(out.contains("\"util\":97"));
         assert!(out.contains("\"watts\":249.5"));
+    }
+
+    /// The page polls at whatever rate the snapshot reports. Publishing one
+    /// number and refreshing at another makes every viewer spend billed reads
+    /// on a file that has not changed, which is what put a bill on a free
+    /// tier in the first place.
+    #[test]
+    fn the_snapshot_states_how_often_it_is_refreshed() {
+        let cfg = Config {
+            ssh_user: "sukim".into(), public_mode: true,
+            min_gap: 2.5, window: 10.0, max_per_window: 5, connect_timeout: 6,
+            power_points: 120, power_log: false, stats_period: 10, stats_keep_days: 365,
+            servers: vec![srv("hi14")], racks: vec![],
+        };
+        let order = cfg.active();
+        let mut m = BTreeMap::new();
+        m.insert("hi14".to_string(), ok_sample());
+        let out = write_snapshot(&cfg, &order, &m, true,
+                                 Cadence { publish_sec: 5, stats_sec: 300 });
+        assert!(out.contains("\"poll_interval_sec\":5"), "{}", out);
+        assert!(out.contains("\"stats_interval_sec\":300"), "{}", out);
     }
 
     #[test]
@@ -758,7 +803,7 @@ mod tests {
         s.status = Status::Down;
         s.error = "ssh: connect to host 10.0.0.1 port 22: refused".into();
         m.insert("hi14".to_string(), s);
-        let out = write_snapshot(&cfg, &order, &m, false);
+        let out = write_snapshot(&cfg, &order, &m, false, Cadence::default());
         assert!(out.contains("10.0.0.1"));
         assert!(out.contains("refused"));
     }

@@ -519,7 +519,11 @@
    animate with transform (compositor-only) rather than width. */
 
 var TAB = "srv";
-var REFRESH_MS = 1000;            // fixed 1 Hz screen refresh
+/* Screen refresh. Starts at 1 Hz and then follows whatever the snapshot says
+   the collector's publish cadence is -- see tuneTimer(). Every fetch is a
+   billed read on the object store, and polling a file four times between
+   rewrites buys nothing but the bill. */
+var REFRESH_MS = 1000, ST_REFRESH_MS = 300000;
 var LAST = null, TIMER = null, INFLIGHT = false;
 var CARDS = new Map(), UNITS = new Map(), ROOMS_BUILT = false;
 
@@ -1237,6 +1241,7 @@ function render() {
   setText($("hcount"), "· " + (sm.servers_up || 0) + "/" + (sm.servers_total || 0) + "대");
 
   var iv = d.poll_interval_sec || 30;
+  tuneTimer(iv, d.stats_interval_sec);
   var age = Math.max(0, Math.floor(Date.now() / 1000) - (d.generated_at || 0));
   /* The site is static and stays up even when the collector does not, so an
      old snapshot must be called out rather than shown as if it were live. */
@@ -1250,8 +1255,11 @@ function render() {
   // Just the age. "1회전 Ns" described a polling sweep that no longer exists --
   // with persistent streams every server updates every second, so a sweep
   // duration is not a thing the viewer can act on.
+  /* "실시간" up to one publish cycle: inside that window the figures are as
+     current as this system gets, and counting out "4초 전" would describe a
+     staleness that does not exist. */
   setText($("hts"), d.generated_at
-    ? (age <= 2 ? "실시간" : age < 60 ? age + "초 전" : fmtAge(age) + " 전")
+    ? (age <= Math.max(2, iv) ? "실시간" : age < 60 ? age + "초 전" : fmtAge(age) + " 전")
     : "수집 중…");
 
   $("boot").classList.add("hide");
@@ -1407,8 +1415,20 @@ function startTimer() {
   // age label is repainted on the normal tick instead.
   AI_TIMER = setInterval(loadSummary, 120000);
   clearInterval(ST_TIMER);
-  // stats.json is republished once a minute; polling it faster is pure waste.
-  ST_TIMER = setInterval(function () { if (TAB === "stat") loadStats(true); }, 60000);
+  ST_TIMER = setInterval(function () { if (TAB === "stat") loadStats(true); }, ST_REFRESH_MS);
+}
+
+/* Follow the collector's own cadence, which it publishes. Hard-coding the
+   rates here meant the page kept asking at 1 Hz for a file the collector had
+   slowed down to five seconds, and every one of those extra requests is a
+   charged read -- about 2.7 million a month per tab left open. */
+function tuneTimer(iv, st) {
+  var ms = Math.max(1000, Math.round((iv || 1) * 1000));
+  var stMs = Math.max(10000, Math.round((st || 60) * 1000));
+  if (ms === REFRESH_MS && stMs === ST_REFRESH_MS) return;
+  REFRESH_MS = ms;
+  ST_REFRESH_MS = stMs;
+  startTimer();
 }
 var ST_TIMER = 0;
 
